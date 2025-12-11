@@ -48,6 +48,64 @@ python () {
         d.appendVarFlag("do_builddeps_repo", "depends", f" {dep}:do_deploy_runtimedeps_{dep_rpm}")
 }
 
+# Get a bumped PRAUTO to bump package revision with "+b<N>" on
+# rebuilds without source change.
+# Adapted from yocto's package.bbclass
+# FIXME should be tied to PF, not just PN (currently does not reset on EVR bump)
+PRSERV_ACTIVE = "${@bool(d.getVar("PRSERV_HOST"))}"
+PRSERV_ACTIVE[vardepvalue] = "${PRSERV_ACTIVE}"
+package_get_auto_pr[vardepsexclude] = "BB_TASKDEPDATA"
+package_get_auto_pr[vardeps] += "PRSERV_ACTIVE"
+python package_get_auto_pr() {
+    import oe.prservice
+
+    def get_do_build_hash(pn):
+        taskdepdata = d.getVar("BB_TASKDEPDATA", False)
+        for dep in taskdepdata:
+            if taskdepdata[dep][1] == "do_build" and taskdepdata[dep][0] == pn:
+                return taskdepdata[dep][6]
+        bb.fatal("package hash not found")
+
+    # Support per recipe PRSERV_HOST
+    pn = d.getVar('PN')
+    host = d.getVar("PRSERV_HOST_" + pn)
+    if not (host is None):
+        d.setVar("PRSERV_HOST", host)
+
+    # PR Server not active, handle AUTOINC
+    if not d.getVar('PRSERV_HOST'):
+        bb.warn(f"PRSERV_HOST not set")
+        d.setVar("PRAUTO", "0")
+        return
+
+    auto_pr = None
+    pv = d.getVar("PV")
+    version = d.getVar("PRAUTOINX")
+    pkgarch = d.getVar("PACKAGE_ARCH")
+    checksum = get_do_build_hash(pn)
+
+    if d.getVar('PRSERV_LOCKDOWN'):
+        auto_pr = d.getVar('PRAUTO_' + version + '_' + pkgarch) or d.getVar('PRAUTO_' + version) or None
+        if auto_pr is None:
+            bb.fatal("Can NOT get PRAUTO from lockdown exported file")
+        bb.note(f"PRAUTO={auto_pr}, from lockdown exported file")
+        d.setVar('PRAUTO',str(auto_pr))
+        return
+
+    try:
+        conn = oe.prservice.prserv_make_conn(d)
+        if conn is not None:
+            # FIXME dnf-bridge: doublecheck we don't miss anything removed yerehere
+            auto_pr = conn.getPR(version, pkgarch, checksum)
+            conn.close()
+    except Exception as e:
+        bb.fatal("Can NOT get PRAUTO, exception %s" %  str(e))
+    if auto_pr is None:
+        bb.fatal("Can NOT get PRAUTO from remote PR service")
+    d.setVar('PRAUTO', str(auto_pr))
+}
+do_build[prefuncs] += "package_get_auto_pr"
+
 # produces ${WORKDIR}/SRPMS and ${WORKDIR}/RPMS
 # FIXME: lacks control of parallel building?
 # FIXME: set _topdir to ${WORKDIR} to stop polluting source
@@ -69,6 +127,7 @@ do_build() {
         --no-network --no-update --disablerepo="*" \
         --local-repo="${BUILDDEPSDIR}" --enablerepo="${BUILDDEPS_REPONAME}" \
         --output-dir="${WORKDIR}" \
+        --define "autorev +b${PRAUTO}" \
         ${XCPNGDEV_BUILD_OPTS} \
         "${S}"
 }
