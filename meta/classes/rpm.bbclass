@@ -75,6 +75,38 @@ python () {
         d.appendVarFlag("do_builddeps_repo", "depends", f" {dep}:do_deploy_runtimedeps_{dep_rpm}")
 }
 
+# Get a bumped PRAUTO to bump package revision with "+b<N>" on
+# rebuilds without source change.
+# Adapted from yocto's package.bbclass
+# FIXME should be tied to PF, not just PN (currently does not reset on EVR bump)
+python get_prauto() {
+    import oe.prservice
+
+    def get_do_package_hash(pn):
+        taskdepdata = d.getVar("BB_TASKDEPDATA", False)
+        for dep in taskdepdata:
+            if taskdepdata[dep][1] == "do_package" and taskdepdata[dep][0] == pn:
+                return taskdepdata[dep][6]
+        bb.fatal("package_hash not found")
+
+    try:
+        conn = oe.prservice.prserv_make_conn(d)
+        if conn is not None:
+            checksum = get_do_package_hash(d.getVar('PN'))
+
+            version = d.getVar("PF") # FIXME not really a version
+            pkgarch = d.getVar("PACKAGE_ARCH")
+
+            auto_pr = conn.getPR(version, pkgarch, checksum)
+            conn.close()
+    except Exception as e:
+        bb.fatal("Can NOT get PRAUTO, exception %s" %  str(e))
+    if auto_pr is None:
+        bb.fatal("Can NOT get PRAUTO from remote PR service")
+    d.setVar('PRAUTO', str(auto_pr))
+}
+do_package[prefuncs] += "get_prauto"
+
 # produces ${WORKDIR}/SRPMS and ${WORKDIR}/RPMS
 # FIXME: lacks control of parallel building?
 # FIXME: set _topdir to ${WORKDIR} to stop polluting source
