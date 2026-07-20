@@ -1,3 +1,6 @@
 [submodule "bitbake"]
 	path = bitbake
 	url = https://git.openembedded.org/bitbake
+[submodule "meta/lib/specfile"]
+	path = specfile
+	url = https://github.com/packit/specfile
