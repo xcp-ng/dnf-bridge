@@ -620,14 +620,14 @@ def do_write(bridge_data: BridgeData) -> None:
         for repoid, info in sorted(repo_info.items(), key=lambda kv: kv[0]):
             print(f"{repoid}: {info}", file=f)
 
-    # PREFERRED_RPROVIDER for all virtual packages
+    # PREFERRED_RPM_RPROVIDER for all virtual packages
     with open(bridge_data.layer / "conf" / "default-providers.conf", "w") as f:
         for virtual, vproviders in sorted(bridge_data.virtual_providers.items(),
                                           key=lambda kv: kv[0]):
             print(f'''
 # providers for {virtual}:
 {"\n".join(f"# - {vprovider.name}" for vprovider in vproviders)}
-PREFERRED_RPROVIDER_{virtual} ??= "{vproviders[0].name if vproviders else ''}"
+PREFERRED_RPM_RPROVIDER_{virtual} ??= "{vproviders[0].name if vproviders else ''}"
 ''', end='', file=f)
 
     # diagnostics helpers
