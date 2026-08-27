@@ -33,9 +33,11 @@ do_deploy() {
 addtask deploy_rtdeps after do_build
 python do_deploy_rtdeps () {
     rtdepsdir = d.getVar('RUNTIMEDEPSDIR')
-    pkg_rtdepsdir = os.path.join(rtdepsdir, d.getVar('PN'))
+    pkg_top_rtdepsdir = os.path.join(rtdepsdir, d.getVar('PN'))
     # FIXME: should remove old symlinks first, rather than later
-    oe.path.remove(pkg_rtdepsdir, recurse=True)
+    oe.path.remove(pkg_top_rtdepsdir, recurse=True)
+    # use a version-unambiguous directory to avoid usage of stale data
+    pkg_rtdepsdir = os.path.join(pkg_top_rtdepsdir, d.getVar('PF'))
     os.makedirs(pkg_rtdepsdir)
     for package in d.getVar('PACKAGES').split():
         with open(f'{pkg_rtdepsdir}/{package}.rtdeps', "wt") as f:
@@ -74,7 +76,7 @@ python () {
 
 # FIXME: should generate do_deploy_runtimedeps_ for PROVIDES as well
 # or we cannot refer to them in Requires:
-# FIXME: lacks depends on RDEPENDS:* - can't we just avoid rtdeps files?
+# FIXME: lacks depends on RDEPENDS:*
 python () {
     import dnfbridge
     # Create tasks to recursively deploy RDEPENDS packages, culling
