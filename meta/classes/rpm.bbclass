@@ -100,6 +100,14 @@ do_build() {
         "${S}"
 }
 
+SSTATETASKS += "do_build"
+do_build[sstate-plaindirs] = "${WORKDIR}/SRPMS ${WORKDIR}/RPMS"
+
+addtask do_build_setscene
+python do_build_setscene () {
+    sstate_setscene(d)
+}
+
 # FIXME we MUST not do that, but for some reason disabling network
 # fails with "newuidmap: write to uid_map failed"
 do_build[network] = "1"
