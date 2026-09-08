@@ -30,6 +30,7 @@ do_deploy() {
 }
 
 # the runtime-dependency data
+# FIXME the files are version-less, problematic on version-switching
 addtask deploy_rtdeps after do_build
 python do_deploy_rtdeps () {
     rtdepsdir = d.getVar('RUNTIMEDEPSDIR')
