@@ -63,6 +63,8 @@ python do_deploy_rtdeps () {
         os.makedirs(os.path.dirname(symlink_target), exist_ok=True)
         os.symlink(os.path.join("../..", d.getVar('PN')), symlink_target)
 }
+# FIXME check why this does not seem to work when fixing the snapping
+# of the freetype/harfbuz deploop (eg. for building blktap)
 python () {
     # record those variables, whose names are not constants in above
     # code, as influencing the task
