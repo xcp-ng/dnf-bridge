@@ -26,6 +26,7 @@ BUILDDEPSDIR = "${WORKDIR}/${BUILDDEPS_REPONAME}"
 
 # FIXME check why a rebuild of a deploy_rtdeps we depend on does not
 # trigger a task rebuild
+# FIXME for each bdep package this pulls all packages built by the same recipe
 addtask builddeps_repo after do_unpack
 python do_builddeps_repo() {
     import dnfbridge
