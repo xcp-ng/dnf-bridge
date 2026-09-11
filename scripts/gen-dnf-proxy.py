@@ -356,14 +356,26 @@ def new_dnf_db(arch: str, dnftmpdir: str) -> dnf.Base:
 
     conf_config_file_path = conf._config.config_file_path()
     conf_config_file_path.set(value='/dev/null', priority=conf_config_file_path.getPriority())
+
+    dirpath = os.path.join(dnftmpdir, "repos")
+    os.makedirs(dirpath)
     conf_reposdir = conf._config.reposdir()
-    conf_reposdir.set(conf_reposdir.getPriority(), os.path.join(dnftmpdir, "repos"))
+    conf_reposdir.set(conf_reposdir.getPriority(), dirpath)
+
+    dirpath = os.path.join(dnftmpdir, "persist")
+    os.makedirs(dirpath)
     conf_persistdir = conf._config.persistdir()
-    conf_persistdir.set(conf_persistdir.getPriority(), os.path.join(dnftmpdir, "persist"))
+    conf_persistdir.set(conf_persistdir.getPriority(), dirpath)
+
+    dirpath = os.path.join(dnftmpdir, "cache")
+    os.makedirs(dirpath)
     conf_system_cachedir = conf._config.system_cachedir()
-    conf_system_cachedir.set(conf_system_cachedir.getPriority(), os.path.join(dnftmpdir, "cache"))
+    conf_system_cachedir.set(conf_system_cachedir.getPriority(), dirpath)
+
+    dirpath = os.path.join(dnftmpdir, "vars")
+    os.makedirs(dirpath)
     conf_varsdir = conf._config.varsdir()
-    conf_varsdir.set(conf_varsdir.getPriority(), os.path.join(dnftmpdir, "vars"))
+    conf_varsdir.set(conf_varsdir.getPriority(), dirpath)
 
     # necessary to solve deps against concrete files
     conf._config.optional_metadata_types().getValue().push_back('load_filelists')
