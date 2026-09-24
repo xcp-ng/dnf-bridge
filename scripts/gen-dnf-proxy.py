@@ -613,9 +613,9 @@ def do_write(bridge_data: BridgeData) -> None:
         # identification of this script: last commit changing it
         # 0. update index to avoid spurious "dirty", e.g. in containers
         script_dir = os.path.dirname(sys.argv[0])
-        this_script = subprocess.run(['git', '-C', script_dir,
-                                      'update-index', '--refresh', '-q'],
-                                     check=True)
+        # this_script = subprocess.run(['git', '-C', script_dir,
+        #                               'update-index', '--refresh', '-q'],
+        #                              check=True)
         # 1. path relative to toplevel
         this_script = subprocess.run(['git', '-C', script_dir,
                                       'ls-files', '--full-name', '--', sys.argv[0]],
