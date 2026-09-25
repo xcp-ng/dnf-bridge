@@ -9,8 +9,10 @@
 # Note: the above *cannot* specify `dnf`, which is not available in `pypi`.
 # Further more, `uv run` and friends will not work today because of this, so
 # these dependencies are only documentation: the script is expected to run
-# with the python3 of an AlmaLinux container, where dnf, git and
-# python3-pydantic are installed as RPMs (see README.md).
+# with the python3 of an AlmaLinux container, where dnf and git are installed
+# as RPMs, and the pypi dependencies are provided by the runtime image built
+# from the repository Dockerfile, or by the python3-pydantic RPM
+# (see README.md).
 
 from __future__ import annotations
 

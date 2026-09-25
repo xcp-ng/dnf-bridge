@@ -117,8 +117,28 @@ you will need to use a container to run the bridge-builder script there.
 
 The `git` executable must be available to the script.
 
-Here is an example for a project bridging Almalinux 10 into
+A prebuilt image with the runtime dependencies is provided by the
+`Dockerfile` at the repository root: it builds on AlmaLinux 10 and
+installs the project dependencies declared in `pyproject.toml` (using
+uv, into a venv which still sees the system dnf module). Build it
+once from the dnf-bridge checkout:
+
+```sh
+podman build -t dnf-bridge /path/to/dnf-bridge
+```
+
+Then run the script for a project bridging Almalinux 10 into
 `meta-almalinux`:
+
+```sh
+podman run --rm -it \
+    -v /path/to/project:/project \
+    dnf-bridge \
+    /project/dnf-bridge/scripts/gen-dnf-proxy.py /project/meta-almalinux
+```
+
+Alternatively, without building the image, the dependencies can be
+installed on the fly:
 
 ```sh
 podman run --rm -it \
