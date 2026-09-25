@@ -3,12 +3,14 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
+#   "pydantic>=2",
 # ]
 # ///
-# Note: the above *cannot* specify `dnf`, which is not available in `pypi`
-# Further more, `uv run` and friends will not work today becuse of this, so
-# we cannot add arbitrary dependencies here, we really need to use just stock
-# python libs.
+# Note: the above *cannot* specify `dnf`, which is not available in `pypi`.
+# Further more, `uv run` and friends will not work today because of this, so
+# these dependencies are only documentation: the script is expected to run
+# with the python3 of an AlmaLinux container, where dnf, git and
+# python3-pydantic are installed as RPMs (see README.md).
 
 from __future__ import annotations
 
@@ -27,8 +29,9 @@ from pathlib import Path
 import dnf
 import hawkey
 from dnf.package import Package
+from pydantic import BaseModel, ConfigDict, ValidationError
 
-from typing import Iterable, Literal, NotRequired, TypedDict, cast
+from typing import Iterable
 
 log = logging.getLogger(__name__)
 
@@ -51,16 +54,18 @@ def srpm_sourcerpm_name_of(srpm: Package) -> str:
     """name of a srpm package suitable for a filter(sourcerpm=...) query"""
     return f"{srpm.name}-{srpm.version}-{srpm.release}.src.rpm" # no epoch here
 
-class AltarchData(TypedDict):
+class AltarchData(BaseModel):
     """altarch entry from a repo config, with 'srcdb' filled in later by compute_bridge_data"""
+    model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
     suffix: str
     baseurl: str
     baseurl_bbvar: str
     basesrcurl: str
-    srcdb: dnf.Base
+    srcdb: dnf.Base | None = None
 
-class RepoConfig(TypedDict):
+class RepoConfig(BaseModel):
     """repo entry from a dnf-bridge.toml config"""
+    model_config = ConfigDict(extra="allow")
     name: str
     baseurl: str
     basesrcurl: str
@@ -70,15 +75,16 @@ class RepoConfig(TypedDict):
     default_bbvar_conf: str
     baseurl_bbvar: str
     basesrcurl_bbvar: str
-    altarch: NotRequired[dict[str, AltarchData]]
-    sections: NotRequired[list[str]]
-    exclude_packages: NotRequired[list[str]]
+    altarch: dict[str, AltarchData] = {}
+    sections: list[str] = []
+    exclude_packages: list[str] = []
 
-class BridgeConfig(TypedDict):
+class BridgeConfig(BaseModel):
     """top-level dnf-bridge.toml config"""
+    model_config = ConfigDict(extra="allow")
     archs: list[str]
     repo: list[RepoConfig]
-    allowed_mismatched_checksums: NotRequired[list[str]]
+    allowed_mismatched_checksums: list[str] = []
 
 class SrpmData:
     """Data about a given SRPM and the RPMs it produced"""
@@ -91,8 +97,9 @@ class SrpmData:
         for arch, bin_db in bin_dbs.items():
             this_altarch_data = altarch_data.get(arch)
             if this_altarch_data:
-                suffix: str = this_altarch_data["suffix"]
-                db = this_altarch_data["srcdb"]
+                suffix: str = this_altarch_data.suffix
+                db = this_altarch_data.srcdb
+                assert db is not None  # compute_bridge_data sets srcdb for every altarch entry
                 srpms = list(db.sack.query()
                              .filter(name=srpm.name, version=srpm.version,
                                     release__glob=srpm.release + suffix + "*")
@@ -303,18 +310,15 @@ def format_arch_dependent_list(varname: str, arch_items: dict[str, list[str]]) -
     return '\n'.join(f'{varname}:{arch} = "{lines}"'
                      for arch, lines in arch_items_content_lines.items())
 
-def altarch_aware_variable(varname: Literal["baseurl", "baseurl_bbvar"],
-                           repo_config: RepoConfig, arch: str) -> str:
-    """Deal with variables being possibly overridden in altarch case"""
-    if "altarch" in repo_config and arch in repo_config["altarch"]:
-        try:
-            url = repo_config["altarch"][arch][varname]
-        except KeyError as ex:
-            raise KeyError(f"expecting '{varname}' in repo_config['altarch'][{arch}]") from ex
-        assert isinstance(url, str)
-        return url
-    assert isinstance(repo_config[varname], str), f"expected a str: repo_config[{varname}] = {repo_config[varname]!r}"
-    return repo_config[varname]
+def altarch_baseurl(repo_config: RepoConfig, arch: str) -> str:
+    """repo_config.baseurl possibly overridden by the altarch entry for arch"""
+    altarch_entry = repo_config.altarch.get(arch)
+    return altarch_entry.baseurl if altarch_entry else repo_config.baseurl
+
+def altarch_baseurl_bbvar(repo_config: RepoConfig, arch: str) -> str:
+    """repo_config.baseurl_bbvar possibly overridden by the altarch entry for arch"""
+    altarch_entry = repo_config.altarch.get(arch)
+    return altarch_entry.baseurl_bbvar if altarch_entry else repo_config.baseurl_bbvar
 
 def write_recipe(srpm_data: SrpmData, recipesdir: Path, repo_config: RepoConfig, bridge_data: BridgeData
                  ) -> None:
@@ -339,7 +343,7 @@ PR = "{pkg.release}"
 """, end='', file=r)
 
         url = str(pkg.remote_location(schemes=["https", "http", "file"])).replace(
-            repo_config["basesrcurl"], f"${{{repo_config['basesrcurl_bbvar']}}}")
+            repo_config.basesrcurl, f"${{{repo_config.basesrcurl_bbvar}}}")
         print(f'\nURI_src = "{url};name=src;unpack=0"',
               file=r)
         print('SRC_URI = "${URI_src}"', file=r)
@@ -357,8 +361,8 @@ PR = "{pkg.release}"
         all_virtual_provides: dict[str, set[str]] = {}
         for arch, arch_rpmdata in srpm_data.arch_rpmdata.items():
             all_virtual_provides[arch] = set()
-            arch_baseurl = altarch_aware_variable("baseurl", repo_config, arch)
-            arch_baseurl_bbvar = altarch_aware_variable("baseurl_bbvar", repo_config, arch).format(arch=arch)
+            arch_baseurl = altarch_baseurl(repo_config, arch)
+            arch_baseurl_bbvar = altarch_baseurl_bbvar(repo_config, arch).format(arch=arch)
             for binpkg in arch_rpmdata.rpms:
                 url = str(binpkg.remote_location(schemes=["https", "http", "file"])).replace(
                     arch_baseurl, f"${{{arch_baseurl_bbvar}}}")
@@ -434,24 +438,24 @@ def compute_bridge_data(archs: list[str], repo_configs: list[RepoConfig]) -> Bri
         srcrepo_sections: list[list[str]] = [] # one list of section repoids per repo_config
         for config in repo_configs:
             srcrepo_sections.append([])
-            if "sections" in config:
-                for section in config["sections"]:
-                    baserepoid = f"{config['name']}-{section}"
-                    srcurl = config["srcurl"].format(basesrcurl=config["basesrcurl"], section=section)
+            if config.sections:
+                for section in config.sections:
+                    baserepoid = f"{config.name}-{section}"
+                    srcurl = config.srcurl.format(basesrcurl=config.basesrcurl, section=section)
                     dbs['src'].repos.add_new_repo(f"{baserepoid}-src", confs['src'], [srcurl])
                     for arch in archs:
-                        binurl = config["binurl"].format(
-                            baseurl=altarch_aware_variable("baseurl", config, arch),
+                        binurl = config.binurl.format(
+                            baseurl=altarch_baseurl(config, arch),
                             section=section, arch=arch)
                         dbs[arch].repos.add_new_repo(f"{baserepoid}-{arch}", confs[arch], [binurl])
                     srcrepo_sections[-1].append(f"{baserepoid}-src")
             else:
-                baserepoid = config['name']
-                srcurl = config["srcurl"].format(basesrcurl=config["basesrcurl"])
+                baserepoid = config.name
+                srcurl = config.srcurl.format(basesrcurl=config.basesrcurl)
                 dbs['src'].repos.add_new_repo(f"{baserepoid}-src", confs['src'], [srcurl])
                 for arch in archs:
-                    binurl = config["binurl"].format(
-                        baseurl=altarch_aware_variable("baseurl", config, arch),
+                    binurl = config.binurl.format(
+                        baseurl=altarch_baseurl(config, arch),
                         arch=arch)
                     dbs[arch].repos.add_new_repo(f"{baserepoid}-{arch}", confs[arch], [binurl])
                 srcrepo_sections[-1].append(f"{baserepoid}-src")
@@ -471,36 +475,34 @@ def compute_bridge_data(archs: list[str], repo_configs: list[RepoConfig]) -> Bri
         # altarch handling needs for each arch all suffix patterns from all repos
         altarch_suffixes: dict[str, list[str]] = {}
         for repo_config in repo_configs:
-            if "altarch" in repo_config:
-                for arch, altarch_entry in repo_config["altarch"].items():
-                    if arch not in altarch_suffixes:
-                        altarch_suffixes[arch] = []
-                    altarch_suffixes[arch].append(altarch_entry["suffix"])
+            for arch, altarch_entry in repo_config.altarch.items():
+                if arch not in altarch_suffixes:
+                    altarch_suffixes[arch] = []
+                altarch_suffixes[arch].append(altarch_entry.suffix)
 
         # incrementally build bridge data
         bridge_data = BridgeData(dbs['src'], {arch: dbs[arch] for arch in archs})
 
         for repo_config, rpms_src in zip(repo_configs, per_repo_rpms_src):
-            exclude_packages: list[str] = repo_config.get("exclude_packages", [])
-            bridge_data.exclude_packages.update(exclude_packages)
-            altarch_data: dict[str, AltarchData] = repo_config.get("altarch", {})
+            bridge_data.exclude_packages.update(repo_config.exclude_packages)
 
             # add repo to dnf config
             bridge_data.per_repo_altarch_src_dbs.append({})
-            for arch, this_altarch_data in altarch_data.items():
-                altarch_conf, this_altarch_data["srcdb"] = new_dnf_db(
-                    arch, os.path.join(dnftmpdir, "altarchsrc", repo_config["name"], arch))
-                srcurl = repo_config["srcurl"].format(basesrcurl=this_altarch_data["basesrcurl"])
-                this_altarch_data["srcdb"].repos.add_new_repo(f"{repo_config['name']}-altarch-src", altarch_conf, [srcurl])
-                this_altarch_data["srcdb"].fill_sack(load_system_repo=False)
-                bridge_data.per_repo_altarch_src_dbs[-1][arch] = this_altarch_data["srcdb"]
+            for arch, altarch_entry in repo_config.altarch.items():
+                altarch_conf, srcdb = new_dnf_db(
+                    arch, os.path.join(dnftmpdir, "altarchsrc", repo_config.name, arch))
+                srcurl = repo_config.srcurl.format(basesrcurl=altarch_entry.basesrcurl)
+                srcdb.repos.add_new_repo(f"{repo_config.name}-altarch-src", altarch_conf, [srcurl])
+                srcdb.fill_sack(load_system_repo=False)
+                bridge_data.per_repo_altarch_src_dbs[-1][arch] = srcdb
+                altarch_entry.srcdb = srcdb
 
             bridge_data.per_repo_rpms_src.append(rpms_src)
             for pkg in filter_dup_packages(rpms_src, bridge_data=bridge_data):
-                if pkg.name in exclude_packages:
+                if pkg.name in repo_config.exclude_packages:
                     log.info("Ignoring excluded package: %s", pkg)
                     continue
-                bridge_data.insert_pkg(pkg, altarch_data=altarch_data)
+                bridge_data.insert_pkg(pkg, altarch_data=repo_config.altarch)
         # this makes rpm-against-srpms check against all repos, but it
         # should not be a problem?
         log.info("STAGE dependency resolution")
@@ -552,8 +554,8 @@ def write_bridge_layer(outlayer: Path, repo_config: RepoConfig, packages: list[P
                        bridge_data: BridgeData) -> None:
     """Create recipe files, and config files for tunable defaults.
     """
-    log.debug("write_bridge_layer('%s') ...", repo_config['name'])
-    recipesdir = outlayer / repo_config["recipes"]
+    log.debug("write_bridge_layer('%s') ...", repo_config.name)
+    recipesdir = outlayer / repo_config.recipes
     if os.path.exists(recipesdir):
         shutil.rmtree(recipesdir)
     os.makedirs(recipesdir)
@@ -562,15 +564,14 @@ def write_bridge_layer(outlayer: Path, repo_config: RepoConfig, packages: list[P
             continue
         write_recipe(srpm_data, recipesdir, repo_config, bridge_data)
 
-    conffile = outlayer / "conf" / repo_config["default_bbvar_conf"]
+    conffile = outlayer / "conf" / repo_config.default_bbvar_conf
     with open(conffile, "w") as f:
         print(f'''# File generated by {os.path.basename(sys.argv[0])}, do not modify
-{repo_config["basesrcurl_bbvar"]} = "{repo_config["basesrcurl"]}"
-{repo_config["baseurl_bbvar"]} = "{repo_config["baseurl"]}"
+{repo_config.basesrcurl_bbvar} = "{repo_config.basesrcurl}"
+{repo_config.baseurl_bbvar} = "{repo_config.baseurl}"
 ''', end='', file=f)
-        if "altarch" in repo_config:
-            for altarch_data in repo_config["altarch"].values():
-                print(f'{altarch_data["baseurl_bbvar"]} = "{altarch_data["baseurl"]}"', file=f)
+        for altarch_data in repo_config.altarch.values():
+            print(f'{altarch_data.baseurl_bbvar} = "{altarch_data.baseurl}"', file=f)
 
 def cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate a proxy BitBake layer for a DNF repo")
@@ -597,21 +598,17 @@ def do_setup() -> Path:
     return Path(args.output_layer)
 
 def do_read(layer: Path) -> BridgeData:
-    with open(layer / "conf/dnf-bridge.toml", "rb") as fp:
-        config = cast(BridgeConfig, tomllib.load(fp))
+    conffile = layer / "conf/dnf-bridge.toml"
+    with open(conffile, "rb") as fp:
+        try:
+            config = BridgeConfig.model_validate(tomllib.load(fp))
+        except ValidationError as ex:
+            raise SystemExit(f"invalid {conffile}:\n{ex}") from ex
 
     log.info("config: %s", config)
 
-    # poor man's schema checking
-    assert "archs" in config
-    assert all(isinstance(arch, str) for arch in config["archs"])
-    assert "repo" in config
-    for repo in config["repo"]:
-        for repokey in ["baseurl", "basesrcurl", "srcurl", "binurl", "recipes", "default_bbvar_conf", "baseurl_bbvar", "basesrcurl_bbvar"]:
-            assert repokey in repo, f"{repokey!r} not in config['repo']"
-
-    bridge_data = compute_bridge_data(config["archs"], config["repo"])
-    bridge_data.allowed_mismatched_checksums = config.get("allowed_mismatched_checksums", [])
+    bridge_data = compute_bridge_data(config.archs, config.repo)
+    bridge_data.allowed_mismatched_checksums = config.allowed_mismatched_checksums
     bridge_data.layer = layer
     bridge_data.config = config
     return bridge_data
@@ -624,7 +621,7 @@ def do_write(bridge_data: BridgeData) -> None:
     log.info("STAGE writing out layer")
     assert bridge_data.layer
     assert bridge_data.config
-    for repo_config, packages in zip(bridge_data.config["repo"], bridge_data.per_repo_rpms_src):
+    for repo_config, packages in zip(bridge_data.config.repo, bridge_data.per_repo_rpms_src):
         write_bridge_layer(bridge_data.layer, repo_config, packages, bridge_data)
 
     # metadata to relate to repo changes (mimics "dnf repolist -v" implementation)
@@ -703,12 +700,14 @@ if __name__ == '__main__':
 
 # recipe for debugging:
 #
-# $ podman run --rm --platform linux/amd64/v2 -it -v $PWD:/xcpng ghcr.io/almalinux/10-base:10 python3
+# $ podman run --rm --platform linux/amd64/v2 -it -v $PWD:/xcpng ghcr.io/almalinux/10-base:10 \
+#     sh -c 'dnf install -y epel-release && dnf install -y git python3-pydantic && python3'
 # >>> import importlib.util
 # >>> import sys
 # >>> from pathlib import Path
 # >>> spec = importlib.util.spec_from_file_location("gdp", "/xcpng/dnf-bridge/scripts/gen-dnf-proxy.py")
 # >>> gdp = importlib.util.module_from_spec(spec)
+# >>> sys.modules["gdp"] = gdp
 # >>> # this is where to start again after a source modification
 # >>> spec.loader.exec_module(gdp)
 # >>> bridge_data = gdp.do_read(Path("/xcpng/meta-almalinux"))

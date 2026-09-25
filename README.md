@@ -124,7 +124,8 @@ Here is an example for a project bridging Almalinux 10 into
 podman run --rm -it \
     -v /path/to/project:/project \
     ghcr.io/almalinux/10-base:10 \
-    sh -c 'dnf install -y git && /project/dnf-bridge/scripts/gen-dnf-proxy.py /project/meta-almalinux'
+    sh -c 'dnf install -y epel-release && dnf install -y git python3-pydantic \
+        && /project/dnf-bridge/scripts/gen-dnf-proxy.py /project/meta-almalinux'
 ```
 
 FIXME: is the `--platform` file actually pertinent, other than to
