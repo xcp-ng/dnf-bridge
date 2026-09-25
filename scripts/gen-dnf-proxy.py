@@ -29,6 +29,8 @@ import hawkey  # type: ignore
 import tomllib
 from dnf.package import Package  # type: ignore
 
+log = logging.getLogger(__name__)
+
 
 class ArchRpmData:
     "An index of RPMs of a given arch produced by a given SRPM"
@@ -79,7 +81,7 @@ class SrpmData:
                                                     .filter(name=srpm.name)
                                                     .latest())]
                     # epel-release is named epel-release-almalinux-altarch :/
-                    logging.debug('package not in altarch-src: %r %r %r - other versions: %s',
+                    log.debug('package not in altarch-src: %r %r %r - other versions: %s',
                                   srpm.name, srpm.version, srpm.release + suffix + "*",
                                   ' '.join(other_versions))
                     bridge_data.version_inconsistencies[srpm.name] = (
@@ -151,12 +153,12 @@ class BridgeData:
             assert arch not in self.arch_providers_cache
             self.arch_providers_cache[arch] = {}
             for srpm_data in self.packages:
-                logging.debug("> %s %s", arch, srpm_data.srpm_sourcerpm_name)
+                log.debug("> %s %s", arch, srpm_data.srpm_sourcerpm_name)
                 if arch not in srpm_data.arch_rpmdata:
                     continue    # already logged in SrpmData.__init__
                 rpmdata = srpm_data.arch_rpmdata[arch]
                 for binpkg in rpmdata.rpms:
-                    logging.debug(">> %s %s", arch, binpkg)
+                    log.debug(">> %s %s", arch, binpkg)
 
                     rel: hawkey.Reldep
                     rpmdata.rdepends[binpkg] = set()
@@ -177,7 +179,7 @@ class BridgeData:
             return
 
         providers = list(bin_db.sack.query().filter(provides=rel).filter(latest=1))
-        logging.debug(">>> '%s' provided by: %s", rel, providers)
+        log.debug(">>> '%s' provided by: %s", rel, providers)
 
         # For now don't express unresolvable Requires.  We will want
         # to drop this and let this handled by the "!= 1" case below,
@@ -185,7 +187,7 @@ class BridgeData:
         # no way currently to understand which ones we don't need.
         if len(providers) == 0:
             self.arch_providers_cache[arch][rel] = None
-            logging.debug(">>>> Ignoring unresolvable dependency '%s'", rel)
+            log.debug(">>>> Ignoring unresolvable dependency '%s'", rel)
             self.arch_unresolved[arch].append(rel)
             return
 
@@ -210,24 +212,24 @@ class BridgeData:
                 other_versions = [srpmdata.srpm_sourcerpm_name for srpmdata in self.packages
                                   if srpmdata.srpm.name == srpm_name]
                 if srpm_name in self.version_inconsistencies:
-                    logging.debug(">>>> %r (%s) not in srpmdata (known inconsistency), other versions: %s",
+                    log.debug(">>>> %r (%s) not in srpmdata (known inconsistency), other versions: %s",
                                   p.sourcerpm, srpm_sourcerpm_name, ' '.join(other_versions))
                 elif srpm_name in self.exclude_packages and not other_versions:
                     # note: that check likely has false negatives in case of repo overlap
-                    logging.debug(">>>> %r (%s) not in srpmdata (excluded)",
+                    log.debug(">>>> %r (%s) not in srpmdata (excluded)",
                                   p.sourcerpm, srpm_sourcerpm_name)
                 else:
-                    logging.debug(">>>> %r (%s) not in srpmdata (should be investigated), other versions: %s",
+                    log.debug(">>>> %r (%s) not in srpmdata (should be investigated), other versions: %s",
                                   p.sourcerpm, srpm_sourcerpm_name, ' '.join(other_versions))
                 flag = True
         if len(newproviders) == 0:
             self.arch_providers_cache[arch][rel] = None
-            logging.debug("Ignoring unresolvable-after-dropping-obsolete-rpms dependency '%s'", rel)
+            log.debug("Ignoring unresolvable-after-dropping-obsolete-rpms dependency '%s'", rel)
             self.arch_unresolved[arch].append(rel)
             return
         providers = newproviders
         if flag:
-            logging.debug("'%s' selected provider: %s", rel, providers)
+            log.debug("'%s' selected provider: %s", rel, providers)
 
         # filter out dups existing in different repos
         if len(providers) > 1:
@@ -402,7 +404,7 @@ def compute_bridge_data(archs: list[str], repo_configs: list[dict]) -> BridgeDat
     with tempfile.TemporaryDirectory() as dnftmpdir:
         ## setup dnf config
 
-        logging.info("STAGE importing package information")
+        log.info("STAGE importing package information")
         for i in ['src'] + archs:
             confs[i], dbs[i] = new_dnf_db(i, dnftmpdir=os.path.join(dnftmpdir, i))
 
@@ -441,7 +443,7 @@ def compute_bridge_data(archs: list[str], repo_configs: list[dict]) -> BridgeDat
                  for pkg in dbs['src'].sack.query().filter(latest=1, reponame=repoid).available()]
             for srcrepos in srcrepo_sections
         ]
-        logging.info(f"packages per repo: {[len(l) for l in per_repo_rpms_src]}")
+        log.info(f"packages per repo: {[len(l) for l in per_repo_rpms_src]}")
 
         # altarch handling needs for each arch all suffix patterns from all repos
         altarch_suffixes = {}
@@ -472,12 +474,12 @@ def compute_bridge_data(archs: list[str], repo_configs: list[dict]) -> BridgeDat
             bridge_data.per_repo_rpms_src.append(rpms_src)
             for pkg in filter_dup_packages(rpms_src, bridge_data=bridge_data):
                 if pkg.name in exclude_packages:
-                    logging.info("Ignoring excluded package: %s", pkg)
+                    log.info("Ignoring excluded package: %s", pkg)
                     continue
                 bridge_data.insert_pkg(pkg, altarch_data=altarch_data)
         # this makes rpm-against-srpms check against all repos, but it
         # should not be a problem?
-        logging.info("STAGE dependency resolution")
+        log.info("STAGE dependency resolution")
         bridge_data.resolve_pkgs(altarch_suffixes)
 
         return bridge_data
@@ -503,7 +505,7 @@ def filter_dup_packages(l: list[Package], *, bridge_data: BridgeData) -> list[Pa
 
     # sanity check: dups must have identical contents
     if len(unique_packages_by_rpmname) and next(iter(unique_packages_by_rpmname.values())).name in bridge_data.allowed_mismatched_checksums:
-        logging.info("ignoring potential cksum mismatch for %s", next(iter(unique_packages_by_rpmname.values())).name)
+        log.info("ignoring potential cksum mismatch for %s", next(iter(unique_packages_by_rpmname.values())).name)
     else:
         assert len(unique_packages_by_rpmname) == len(unique_packages_contents), (
             "identical rpmname with different chksum"
@@ -515,7 +517,7 @@ def filter_dup_packages(l: list[Package], *, bridge_data: BridgeData) -> list[Pa
 
     assert unique_packages_by_rpmname
     assert len(unique_packages_by_rpmname) < len(l)
-    logging.debug("filter_dup_packages: filtered out %s duplicate packages",
+    log.debug("filter_dup_packages: filtered out %s duplicate packages",
                   len(l) - len(unique_packages_by_rpmname))
     unique_packages = dict(unique_packages_by_rpmname)
     return list(unique_packages.values())
@@ -524,7 +526,7 @@ def write_bridge_layer(outlayer: Path, repo_config: dict, packages: list[Package
                        bridge_data: BridgeData) -> None:
     """Create recipe files, and config files for tunable defaults.
     """
-    logging.debug("write_bridge_layer('%s') ...", repo_config['name'])
+    log.debug("write_bridge_layer('%s') ...", repo_config['name'])
     recipesdir = outlayer / repo_config["recipes"]
     if os.path.exists(recipesdir):
         shutil.rmtree(recipesdir)
@@ -571,7 +573,7 @@ def do_read(layer: Path) -> BridgeData:
     with open(layer / "conf/dnf-bridge.toml", "rb") as fp:
         config = tomllib.load(fp)
 
-    logging.info("config: %s", config)
+    log.info("config: %s", config)
 
     # poor man's schema checking
     assert "archs" in config
@@ -594,7 +596,7 @@ def format_repo_info(repo: dnf.repo.Repo) -> str:
             f" updated-utc: {time.asctime(time.gmtime(repo._repo.getMaxTimestamp()))}")
 
 def do_write(bridge_data: BridgeData) -> None:
-    logging.info("STAGE writing out layer")
+    log.info("STAGE writing out layer")
     assert bridge_data.layer
     assert bridge_data.config
     for repo_config, packages in zip(bridge_data.config["repo"], bridge_data.per_repo_rpms_src):
@@ -671,7 +673,7 @@ if __name__ == '__main__':
     layer = do_setup()
     bridge_data = do_read(layer)
     do_write(bridge_data)
-    logging.info("STAGE finished")
+    log.info("STAGE finished")
 
 # recipe for debugging:
 #
