@@ -21,19 +21,20 @@ import subprocess
 import sys
 import tempfile
 import time
-from pathlib import Path
-from typing import TypedDict
-
-import dnf  # type: ignore
-import hawkey  # type: ignore
 import tomllib
-from dnf.package import Package  # type: ignore
+from pathlib import Path
+
+import dnf
+import hawkey
+from dnf.package import Package
+
+from typing import Iterable, Literal, NotRequired, TypedDict, cast
 
 log = logging.getLogger(__name__)
 
 
 class ArchRpmData:
-    "An index of RPMs of a given arch produced by a given SRPM"
+    """An index of RPMs of a given arch produced by a given SRPM"""
     def __init__(self, srpm_data: SrpmData, bin_db: dnf.Base, *,
                  bridge_data: BridgeData, srpm_sourcerpm_name: str):
         self.srpm_data = srpm_data # ref back to srpm
@@ -47,19 +48,40 @@ class ArchRpmData:
         self.unresolved: list[str] = []
 
 def srpm_sourcerpm_name_of(srpm: Package) -> str:
-    "name of a srpm package suitable for a filter(sourcerpm=...) query"
+    """name of a srpm package suitable for a filter(sourcerpm=...) query"""
     return f"{srpm.name}-{srpm.version}-{srpm.release}.src.rpm" # no epoch here
 
 class AltarchData(TypedDict):
-    "altarch entry from a repo config, with 'srcdb' filled in later by compute_bridge_data"
+    """altarch entry from a repo config, with 'srcdb' filled in later by compute_bridge_data"""
     suffix: str
     baseurl: str
     baseurl_bbvar: str
     basesrcurl: str
     srcdb: dnf.Base
 
+class RepoConfig(TypedDict):
+    """repo entry from a dnf-bridge.toml config"""
+    name: str
+    baseurl: str
+    basesrcurl: str
+    srcurl: str
+    binurl: str
+    recipes: str
+    default_bbvar_conf: str
+    baseurl_bbvar: str
+    basesrcurl_bbvar: str
+    altarch: NotRequired[dict[str, AltarchData]]
+    sections: NotRequired[list[str]]
+    exclude_packages: NotRequired[list[str]]
+
+class BridgeConfig(TypedDict):
+    """top-level dnf-bridge.toml config"""
+    archs: list[str]
+    repo: list[RepoConfig]
+    allowed_mismatched_checksums: NotRequired[list[str]]
+
 class SrpmData:
-    "Data about a given SRPM and the RPMs it produced"
+    """Data about a given SRPM and the RPMs it produced"""
     def __init__(self, srpm: Package, bin_dbs: dict[str, dnf.Base], bridge_data: BridgeData,
                  altarch_data: dict[str, AltarchData]):
         self.srpm = srpm
@@ -126,14 +148,14 @@ class BridgeData:
         self.version_inconsistencies: dict[str, str] = {}
         self.allowed_mismatched_checksums: list[str] = []
         self.exclude_packages: set[str] = set() # packages excluded from any repo
-        self.config: dict | None = None
+        self.config: BridgeConfig | None = None
         self.layer: Path | None = None
 
     def __repr__(self) -> str:
         return (f'<BridgeData for "{self.layer}", {len(self.packages)} packages,'
                 f' {sum(len(unresolved) for unresolved in self.arch_unresolved.values())} unresolved>')
 
-    def packages_named(self, name: str) -> list[Package]:
+    def packages_named(self, name: str) -> list[SrpmData]:
         return [p for p in self.packages if p.srpm.name == name]
 
     def insert_pkg(self, pkg: Package, *, altarch_data: dict[str, AltarchData]) -> None:
@@ -173,8 +195,7 @@ class BridgeData:
 
     def __resolve(self, arch: str, bin_db: dnf.Base, rel: hawkey.Reldep, *,
                   altarch_suffixes: list[str]) -> None:
-        "Resolve `rel` and record result in `self.arch_providers_cache`, if not already there"
-
+        """Resolve `rel` and record result in `self.arch_providers_cache`, if not already there"""
         if rel in self.arch_providers_cache[arch]:
             return
 
@@ -282,8 +303,9 @@ def format_arch_dependent_list(varname: str, arch_items: dict[str, list[str]]) -
     return '\n'.join(f'{varname}:{arch} = "{lines}"'
                      for arch, lines in arch_items_content_lines.items())
 
-def altarch_aware_variable(varname: str, repo_config: dict, arch: str) -> str:
-    "Deal with variables being possibly overridden in altarch case"
+def altarch_aware_variable(varname: Literal["baseurl", "baseurl_bbvar"],
+                           repo_config: RepoConfig, arch: str) -> str:
+    """Deal with variables being possibly overridden in altarch case"""
     if "altarch" in repo_config and arch in repo_config["altarch"]:
         try:
             url = repo_config["altarch"][arch][varname]
@@ -294,7 +316,7 @@ def altarch_aware_variable(varname: str, repo_config: dict, arch: str) -> str:
     assert isinstance(repo_config[varname], str), f"expected a str: repo_config[{varname}] = {repo_config[varname]!r}"
     return repo_config[varname]
 
-def write_recipe(srpm_data: SrpmData, recipesdir: Path, repo_config: dict, bridge_data: BridgeData
+def write_recipe(srpm_data: SrpmData, recipesdir: Path, repo_config: RepoConfig, bridge_data: BridgeData
                  ) -> None:
     """Write a .bb file from info collected in SrpmData object.
     """
@@ -316,8 +338,8 @@ PR = "{pkg.release}"
 {arch_packages_lines}
 """, end='', file=r)
 
-        url = (pkg.remote_location(schemes=["https", "http", "file"])
-               .replace(repo_config["basesrcurl"], f"${{{repo_config['basesrcurl_bbvar']}}}"))
+        url = str(pkg.remote_location(schemes=["https", "http", "file"])).replace(
+            repo_config["basesrcurl"], f"${{{repo_config['basesrcurl_bbvar']}}}")
         print(f'\nURI_src = "{url};name=src;unpack=0"',
               file=r)
         print('SRC_URI = "${URI_src}"', file=r)
@@ -326,9 +348,10 @@ PR = "{pkg.release}"
 
         for arch, arch_rpmdata in srpm_data.arch_rpmdata.items():
             if arch_rpmdata.unresolved:
+                unresolved_txt = '\n'.join(f"# - {line}" for line in sorted(arch_rpmdata.unresolved))
                 print(f'''
 ## Requires ({arch}) that were seen as not satisfiable in original repo:
-{'\n'.join(f"# - {line}" for line in sorted(arch_rpmdata.unresolved))}
+{unresolved_txt}
 ''', end='', file=r)
 
         all_virtual_provides: dict[str, set[str]] = {}
@@ -337,8 +360,8 @@ PR = "{pkg.release}"
             arch_baseurl = altarch_aware_variable("baseurl", repo_config, arch)
             arch_baseurl_bbvar = altarch_aware_variable("baseurl_bbvar", repo_config, arch).format(arch=arch)
             for binpkg in arch_rpmdata.rpms:
-                url = (binpkg.remote_location(schemes=["https", "http", "file"])
-                       .replace(arch_baseurl, f"${{{arch_baseurl_bbvar}}}"))
+                url = str(binpkg.remote_location(schemes=["https", "http", "file"])).replace(
+                    arch_baseurl, f"${{{arch_baseurl_bbvar}}}")
                 print(f'\nURI_{arch}_{binpkg.name} = "{url};name={arch}_{binpkg.name};unpack=0"',
                       file=r)
                 print(f'SRC_URI:append = " ${{URI_{arch}_{binpkg.name}}}"', file=r)
@@ -358,8 +381,8 @@ PR = "{pkg.release}"
             }
             print(format_arch_dependent_list(f'RDEPENDS:{rpmname}', arch_rdeps), file=r)
 
-def new_dnf_db(arch: str, dnftmpdir: str) -> dnf.Base:
-    "Build a new DNF config isolated from any system dnf config files"
+def new_dnf_db(arch: str, dnftmpdir: str) -> tuple[dnf.conf.Conf, dnf.Base]:
+    """Build a new DNF config isolated from any system dnf config files"""
     conf = dnf.conf.Conf()
 
     conf_config_file_path = conf._config.config_file_path()
@@ -395,11 +418,11 @@ def new_dnf_db(arch: str, dnftmpdir: str) -> dnf.Base:
 
     return conf, db
 
-def compute_bridge_data(archs: list[str], repo_configs: list[dict]) -> BridgeData:
+def compute_bridge_data(archs: list[str], repo_configs: list[RepoConfig]) -> BridgeData:
     """Fetches data from DNF repo and compute the bits needed for bitbake.
     """
     confs: dict[str, dnf.conf.Conf] = {}
-    dbs = {}
+    dbs: dict[str, dnf.Base] = {}
 
     with tempfile.TemporaryDirectory() as dnftmpdir:
         ## setup dnf config
@@ -446,20 +469,21 @@ def compute_bridge_data(archs: list[str], repo_configs: list[dict]) -> BridgeDat
         log.info(f"packages per repo: {[len(l) for l in per_repo_rpms_src]}")
 
         # altarch handling needs for each arch all suffix patterns from all repos
-        altarch_suffixes = {}
+        altarch_suffixes: dict[str, list[str]] = {}
         for repo_config in repo_configs:
-            for arch, altarch_data in repo_config.get("altarch", {}).items():
-                if arch not in altarch_suffixes:
-                    altarch_suffixes[arch] = []
-                altarch_suffixes[arch].append(altarch_data["suffix"])
+            if "altarch" in repo_config:
+                for arch, altarch_entry in repo_config["altarch"].items():
+                    if arch not in altarch_suffixes:
+                        altarch_suffixes[arch] = []
+                    altarch_suffixes[arch].append(altarch_entry["suffix"])
 
         # incrementally build bridge data
         bridge_data = BridgeData(dbs['src'], {arch: dbs[arch] for arch in archs})
 
         for repo_config, rpms_src in zip(repo_configs, per_repo_rpms_src):
-            exclude_packages = repo_config.get("exclude_packages", [])
+            exclude_packages: list[str] = repo_config.get("exclude_packages", [])
             bridge_data.exclude_packages.update(exclude_packages)
-            altarch_data = repo_config.get("altarch", {})
+            altarch_data: dict[str, AltarchData] = repo_config.get("altarch", {})
 
             # add repo to dnf config
             bridge_data.per_repo_altarch_src_dbs.append({})
@@ -467,7 +491,7 @@ def compute_bridge_data(archs: list[str], repo_configs: list[dict]) -> BridgeDat
                 altarch_conf, this_altarch_data["srcdb"] = new_dnf_db(
                     arch, os.path.join(dnftmpdir, "altarchsrc", repo_config["name"], arch))
                 srcurl = repo_config["srcurl"].format(basesrcurl=this_altarch_data["basesrcurl"])
-                this_altarch_data["srcdb"].repos.add_new_repo(f"{repo_config["name"]}-altarch-src", altarch_conf, [srcurl])
+                this_altarch_data["srcdb"].repos.add_new_repo(f"{repo_config['name']}-altarch-src", altarch_conf, [srcurl])
                 this_altarch_data["srcdb"].fill_sack(load_system_repo=False)
                 bridge_data.per_repo_altarch_src_dbs[-1][arch] = this_altarch_data["srcdb"]
 
@@ -484,7 +508,7 @@ def compute_bridge_data(archs: list[str], repo_configs: list[dict]) -> BridgeDat
 
         return bridge_data
 
-def filter_dup_packages(l: list[Package], *, bridge_data: BridgeData) -> list[Package]:
+def filter_dup_packages(l: Iterable[Package], *, bridge_data: BridgeData) -> list[Package]:
     """Filter out packages appearing in more than one repo/section.
 
     This deals with a number of Alma binary RPMs appearing in more
@@ -496,12 +520,14 @@ def filter_dup_packages(l: list[Package], *, bridge_data: BridgeData) -> list[Pa
     EPEL, and have different checksums.
     """
     # prepare to index package by (rpmname, chksum)
-    pkg_info = list(zip(((os.path.basename(p.remote_location()), p.chksum) for p in l),
+    pkg_info = list(zip(((os.path.basename(str(p.remote_location())), p.chksum) for p in l),
                         l))
     # unicity of rpmname, and of (rpmname, chksum)
     unique_packages_contents = {info for (info, _pkg) in pkg_info}
     unique_packages_by_rpmname = {rpmname: pkg
                                   for ((rpmname, _chksum), pkg) in pkg_info}
+
+    pkgs = list(l)
 
     # sanity check: dups must have identical contents
     if len(unique_packages_by_rpmname) and next(iter(unique_packages_by_rpmname.values())).name in bridge_data.allowed_mismatched_checksums:
@@ -509,20 +535,20 @@ def filter_dup_packages(l: list[Package], *, bridge_data: BridgeData) -> list[Pa
     else:
         assert len(unique_packages_by_rpmname) == len(unique_packages_contents), (
             "identical rpmname with different chksum"
-            f" (len({unique_packages_by_rpmname})==len({unique_packages_contents})) in {l}:"
+            f" (len({unique_packages_by_rpmname})==len({unique_packages_contents})) in {pkgs}:"
             f" {unique_packages_contents}")
 
-    if len(unique_packages_by_rpmname) == len(l):
-        return l
+    if len(unique_packages_by_rpmname) == len(pkgs):
+        return pkgs
 
     assert unique_packages_by_rpmname
-    assert len(unique_packages_by_rpmname) < len(l)
+    assert len(unique_packages_by_rpmname) < len(pkgs)
     log.debug("filter_dup_packages: filtered out %s duplicate packages",
-                  len(l) - len(unique_packages_by_rpmname))
+                  len(pkgs) - len(unique_packages_by_rpmname))
     unique_packages = dict(unique_packages_by_rpmname)
     return list(unique_packages.values())
 
-def write_bridge_layer(outlayer: Path, repo_config: dict, packages: list[Package],
+def write_bridge_layer(outlayer: Path, repo_config: RepoConfig, packages: list[Package],
                        bridge_data: BridgeData) -> None:
     """Create recipe files, and config files for tunable defaults.
     """
@@ -542,8 +568,9 @@ def write_bridge_layer(outlayer: Path, repo_config: dict, packages: list[Package
 {repo_config["basesrcurl_bbvar"]} = "{repo_config["basesrcurl"]}"
 {repo_config["baseurl_bbvar"]} = "{repo_config["baseurl"]}"
 ''', end='', file=f)
-        for altarch_data in repo_config.get("altarch", {}).values():
-            print(f'{altarch_data["baseurl_bbvar"]} = "{altarch_data["baseurl"]}"', file=f)
+        if "altarch" in repo_config:
+            for altarch_data in repo_config["altarch"].values():
+                print(f'{altarch_data["baseurl_bbvar"]} = "{altarch_data["baseurl"]}"', file=f)
 
 def cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate a proxy BitBake layer for a DNF repo")
@@ -571,16 +598,14 @@ def do_setup() -> Path:
 
 def do_read(layer: Path) -> BridgeData:
     with open(layer / "conf/dnf-bridge.toml", "rb") as fp:
-        config = tomllib.load(fp)
+        config = cast(BridgeConfig, tomllib.load(fp))
 
     log.info("config: %s", config)
 
     # poor man's schema checking
     assert "archs" in config
-    assert isinstance(config["archs"], list)
     assert all(isinstance(arch, str) for arch in config["archs"])
     assert "repo" in config
-    assert isinstance(config["repo"], list)
     for repo in config["repo"]:
         for repokey in ["baseurl", "basesrcurl", "srcurl", "binurl", "recipes", "default_bbvar_conf", "baseurl_bbvar", "basesrcurl_bbvar"]:
             assert repokey in repo, f"{repokey!r} not in config['repo']"
@@ -591,7 +616,7 @@ def do_read(layer: Path) -> BridgeData:
     bridge_data.config = config
     return bridge_data
 
-def format_repo_info(repo: dnf.repo.Repo) -> str:
+def format_repo_info(repo: dnf.Repo) -> str:
     return (f"revision: {repo._repo.getRevision()},"
             f" updated-utc: {time.asctime(time.gmtime(repo._repo.getMaxTimestamp()))}")
 
@@ -605,7 +630,6 @@ def do_write(bridge_data: BridgeData) -> None:
     # metadata to relate to repo changes (mimics "dnf repolist -v" implementation)
     repo_info: dict[str, str] = {}
     for repoid, repo in bridge_data.src_db.repos.items():
-        assert isinstance(repo, dnf.repo.Repo)
         repo_info[repoid] = format_repo_info(repo)
     for arch, bin_db in bridge_data.bin_dbs.items():
         for repoid, repo in bin_db.repos.items():
@@ -643,9 +667,10 @@ def do_write(bridge_data: BridgeData) -> None:
     with open(bridge_data.layer / "conf" / "default-providers.conf", "w") as f:
         for virtual, vproviders in sorted(bridge_data.virtual_providers.items(),
                                           key=lambda kv: kv[0]):
+            providers_txt = '\n'.join(f"# - {vprovider.name}" for vprovider in vproviders)
             print(f'''
 # providers for {virtual}:
-{"\n".join(f"# - {vprovider.name}" for vprovider in vproviders)}
+{providers_txt}
 PREFERRED_RPM_RPROVIDER_{virtual} ??= "{vproviders[0].name if vproviders else ''}"
 ''', end='', file=f)
 
@@ -655,9 +680,10 @@ PREFERRED_RPM_RPROVIDER_{virtual} ??= "{vproviders[0].name if vproviders else ''
         print("Requires that were seen as not satisfiable in original repo:", file=f)
 
         for arch in bridge_data.bin_dbs:
+            unresolved_txt = '\n'.join(sorted(str(reldep) for reldep in bridge_data.arch_unresolved[arch]))
             print(f'''
 For arch {arch}:
-{'\n'.join(sorted(str(reldep) for reldep in bridge_data.arch_unresolved[arch]))}
+{unresolved_txt}
 ''', file=f)
 
     with open(bridge_data.layer / "conf" / "version_inconsistencies.log", "w") as f:
