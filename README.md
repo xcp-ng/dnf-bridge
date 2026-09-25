@@ -124,17 +124,19 @@ uv, into a venv which still sees the system dnf module). Build it
 once from the dnf-bridge checkout:
 
 ```sh
-podman build -t dnf-bridge /path/to/dnf-bridge
+podman build -t dnf-bridge .
 ```
 
-Then run the script for a project bridging Almalinux 10 into
-`meta-almalinux`:
+Then run the script for a layer placed as a sibling of the
+dnf-bridge checkout (`./` is dnf-bridge, `../meta-almalinux` the
+layer):
 
 ```sh
 podman run --rm -it \
-    -v /path/to/project:/project \
+    -v "$PWD":/dnf-bridge \
+    -v "$PWD"/../meta-almalinux:/meta-almalinux \
     dnf-bridge \
-    /project/dnf-bridge/scripts/gen-dnf-proxy.py /project/meta-almalinux
+    /dnf-bridge/scripts/gen-dnf-proxy.py /meta-almalinux
 ```
 
 Alternatively, without building the image, the dependencies can be
@@ -142,10 +144,11 @@ installed on the fly:
 
 ```sh
 podman run --rm -it \
-    -v /path/to/project:/project \
+    -v "$PWD":/dnf-bridge \
+    -v "$PWD"/../meta-almalinux:/meta-almalinux \
     ghcr.io/almalinux/10-base:10 \
     sh -c 'dnf install -y epel-release && dnf install -y git python3-pydantic \
-        && /project/dnf-bridge/scripts/gen-dnf-proxy.py /project/meta-almalinux'
+        && /dnf-bridge/scripts/gen-dnf-proxy.py /meta-almalinux'
 ```
 
 FIXME: is the `--platform` file actually pertinent, other than to

@@ -702,16 +702,18 @@ if __name__ == '__main__':
 
 # recipe for debugging:
 #
-# $ podman run --rm --platform linux/amd64/v2 -it -v $PWD:/xcpng ghcr.io/almalinux/10-base:10 \
+# $ podman run --rm --platform linux/amd64/v2 -it \
+#     -v $PWD:/dnf-bridge -v $PWD/../meta-almalinux:/meta-almalinux \
+#     ghcr.io/almalinux/10-base:10 \
 #     sh -c 'dnf install -y epel-release && dnf install -y git python3-pydantic && python3'
 # >>> import importlib.util
 # >>> import sys
 # >>> from pathlib import Path
-# >>> spec = importlib.util.spec_from_file_location("gdp", "/xcpng/dnf-bridge/scripts/gen-dnf-proxy.py")
+# >>> spec = importlib.util.spec_from_file_location("gdp", "/dnf-bridge/scripts/gen-dnf-proxy.py")
 # >>> gdp = importlib.util.module_from_spec(spec)
 # >>> sys.modules["gdp"] = gdp
 # >>> # this is where to start again after a source modification
 # >>> spec.loader.exec_module(gdp)
-# >>> bridge_data = gdp.do_read(Path("/xcpng/meta-almalinux"))
+# >>> bridge_data = gdp.do_read(Path("/meta-almalinux"))
 # >>> # sample:
 # >>> srpm_data, = bridge_data.packages_named("glibc")
