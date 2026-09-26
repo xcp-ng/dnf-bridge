@@ -38,6 +38,29 @@ from typing import Iterable
 log = logging.getLogger(__name__)
 
 
+class ColorFormatter(logging.Formatter):
+    colors = {
+        logging.CRITICAL: '\033[31m',
+        logging.ERROR: '\033[31m',
+        logging.WARNING: '\033[33m',
+        logging.DEBUG: '\033[34m',
+    }
+
+    def __init__(self, use_color: bool) -> None:
+        super().__init__(fmt='{message}', style='{')
+        self.use_color = use_color
+
+    def format(self, record: logging.LogRecord) -> str:
+        message = super().format(record)
+        if record.levelno == logging.INFO:
+            return message
+
+        prefix = f'{record.levelname.lower()}: '
+        if color := self.colors.get(record.levelno) if self.use_color else None:
+            prefix = f'{color}{prefix}\033[0m'
+        return '\n'.join(f'{prefix}{line}' for line in message.splitlines() or [''])
+
+
 class ArchRpmData:
     """An index of RPMs of a given arch produced by a given SRPM"""
     def __init__(self, srpm_data: SrpmData, bin_db: dnf.Base, *,
@@ -587,15 +610,15 @@ def do_setup() -> Path:
     args = cli_parser().parse_args()
     match args.verbose:
         case 0:
-            LOGLEVEL = logging.WARNING
-        case 1:
             LOGLEVEL = logging.INFO
         case _:
             LOGLEVEL = logging.DEBUG
 
-    logging.basicConfig(
-        level=LOGLEVEL,
-        format='{asctime}|{levelname}: {message}', style='{')
+    handler = logging.StreamHandler()
+    handler.setFormatter(ColorFormatter(
+        not os.environ.get('NO_COLOR') and (bool(os.environ.get('FORCE_COLOR')) or sys.stderr.isatty()),
+    ))
+    logging.basicConfig(level=LOGLEVEL, handlers=[handler])
 
     return Path(args.output_layer)
 
