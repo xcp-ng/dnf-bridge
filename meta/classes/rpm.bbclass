@@ -143,3 +143,54 @@ python do_build_setscene () {
 # FIXME we MUST not do that, but for some reason disabling network
 # fails with "newuidmap: write to uid_map failed"
 do_build[network] = "1"
+
+
+addtask checkinstall after do_build
+do_checkinstall[noexec] = "1"
+
+python check_install() {
+    import subprocess
+    import dnfbridge
+
+    TASK_PREFIX = "do_checkinstall_"
+    this_task = d.getVar("BB_RUNTASK")
+    assert this_task.startswith(TASK_PREFIX)
+    this_package = this_task[len(TASK_PREFIX):]
+
+    bb.note(f"check_install for {this_package}")
+
+    # prepare a dnf repo with all deps
+    rdepsdir = f"{d.getVar('WORKDIR')}/rdeps/{this_package}"
+    recdepdict = {} # binrpm -> recipe
+    dnfbridge.accumulate_rdeps_from_list(d, recdepdict, [this_package])
+    dnfbridge.create_dnfrepo_with_contents(d, rdepsdir, recdepdict.keys())
+
+    maybe_bootstrap = "--bootstrap" if d.getVar('PACKAGE_NEEDS_BOOTSTRAP') else "--isarpm"
+
+    cmd = ['env', 'XCPNG_OCI_RUNNER=podman', d.getVar('XCPNGDEV'), 'container', 'run', '9.0',
+           maybe_bootstrap,
+           '--platform', d.getVar('CONTAINER_ARCH'),
+           '--debug',
+           '--no-network', '--no-update', '--disablerepo=*',
+           '--local-repo', f"rdeps:{rdepsdir}", '--enablerepo', 'rdeps',
+           d.getVar('XCPNGDEV_BUILD_OPTS'),
+           '--',
+           'sudo', 'dnf', 'install', '-y', this_package]
+    subprocess.check_call(cmd)
+}
+
+# do_checkinstall needs each PACKAGES' do_checkinstall_
+python () {
+    pn = d.getVar('PN')
+    for pkg in d.getVar("PACKAGES").split():
+        newtask = f"do_checkinstall_{pkg}"
+        bb.build.addtask(newtask, "do_checkinstall", f"do_deploy_runtimedeps_{pkg}", d)
+        # we apparently cannot set the task function directly, set it
+        # to something falsy not non-None to avoid a warning, and use
+        # prefuncs for what would be the task
+        d.setVar(newtask, "")
+        d.setVarFlag(newtask, "prefuncs", "check_install")
+        # FIXME we MUST not do that, but for some reason disabling network
+        # fails with "newuidmap: write to uid_map failed"
+        d.setVarFlag(newtask, "network", "1")
+}
