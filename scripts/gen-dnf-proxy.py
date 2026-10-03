@@ -431,6 +431,15 @@ def new_dnf_db(arch: str, dnftmpdir: str) -> tuple[dnf.conf.Conf, dnf.Base]:
     os.makedirs(dirpath)
     conf_system_cachedir = conf._config.system_cachedir()
     conf_system_cachedir.set(conf_system_cachedir.getPriority(), dirpath)
+    # dnf.conf.Conf() already computed cachedir from the system default, and
+    # this is the one actually used to store the repodata
+    conf_cachedir = conf._config.cachedir()
+    conf_cachedir.set(conf_cachedir.getPriority(), dirpath)
+
+    dirpath = os.path.join(dnftmpdir, "log")
+    os.makedirs(dirpath)
+    conf_logdir = conf._config.logdir()
+    conf_logdir.set(conf_logdir.getPriority(), dirpath)
 
     dirpath = os.path.join(dnftmpdir, "vars")
     os.makedirs(dirpath)
@@ -438,7 +447,8 @@ def new_dnf_db(arch: str, dnftmpdir: str) -> tuple[dnf.conf.Conf, dnf.Base]:
     conf_varsdir.set(conf_varsdir.getPriority(), dirpath)
 
     # necessary to solve deps against concrete files
-    conf._config.optional_metadata_types().getValue().push_back('load_filelists')
+    conf_optional_metadata_types = conf._config.optional_metadata_types()
+    conf_optional_metadata_types.set(conf_optional_metadata_types.getPriority(), 'filelists')
 
     db = dnf.Base(conf=conf)
     if arch not in ('src', db.conf.substitutions['arch']):
