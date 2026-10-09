@@ -1,0 +1,8 @@
+[submodule "bitbake"]
+	path = bitbake
+	# url = https://git.openembedded.org/bitbake
+        # needed for patches that won't make it in eol'd 2.16
+        url = https://github.com/ydirson/bitbake
+[submodule "meta/lib/specfile"]
+	path = specfile
+	url = https://github.com/packit/specfile
