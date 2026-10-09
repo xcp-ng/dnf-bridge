@@ -82,7 +82,7 @@ python () {
 
 # FIXME: should generate do_deploy_runtimedeps_ for PROVIDES as well
 # or we cannot refer to them in Requires:
-# FIXME: lacks depends on RDEPENDS:* - can't we just avoid rtdeps files?
+# FIXME: lacks depends on RDEPENDS:*
 python () {
     import dnfbridge
     # Create tasks to recursively deploy RDEPENDS packages, culling
