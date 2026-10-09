@@ -147,7 +147,7 @@ do_build[network] = "1"
 
 addtask checkinstall after do_build
 do_checkinstall[noexec] = "1"
-
+do_checkinstall[depends] = "build-env:do_deploy build-env:do_build_bootstrap"
 python check_install() {
     import subprocess
     import dnfbridge
@@ -165,10 +165,8 @@ python check_install() {
     dnfbridge.accumulate_rdeps_from_list(d, recdepdict, [this_package])
     dnfbridge.create_dnfrepo_with_contents(d, rdepsdir, recdepdict.keys())
 
-    maybe_bootstrap = "--bootstrap" if d.getVar('PACKAGE_NEEDS_BOOTSTRAP') else "--isarpm"
-
     cmd = ['env', 'XCPNG_OCI_RUNNER=podman', d.getVar('XCPNGDEV'), 'container', 'run', '9.0',
-           maybe_bootstrap,
+           "--bootstrap",       # we don't care about the --isarpm contents here
            '--platform', d.getVar('CONTAINER_ARCH'),
            '--debug',
            '--no-network', '--no-update', '--disablerepo=*',
@@ -176,6 +174,7 @@ python check_install() {
            d.getVar('XCPNGDEV_BUILD_OPTS'),
            '--',
            'sudo', 'dnf', 'install', '-y', this_package]
+    bb.debug(1, f"Running: {' '.join(cmd)}")
     subprocess.check_call(cmd)
 }
 
