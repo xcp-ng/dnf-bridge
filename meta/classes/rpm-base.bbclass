@@ -74,7 +74,10 @@ python () {
     # record those variables, whose names are not constants in above
     # code, as influencing the task
     for package in (d.getVar('PACKAGES') or '').split():
-        d.appendVarFlag("do_deploy_rtdeps", "vardeps", f'RDEPENDS:{package}')
+        d.appendVarFlag("do_deploy_rtdeps", "vardeps", f' RDEPENDS:{package} RPROVIDES:{package}')
+        for rprovides in (d.getVar(f'RPROVIDES:{package}') or '').split():
+            if rprovides.startswith('virtual/'):
+                d.appendVarFlag("do_deploy_rtdeps", "vardeps", f"PREFERRED_RPM_RPROVIDER_{rprovides}")
 }
 
 # FIXME: should generate do_deploy_runtimedeps_ for PROVIDES as well
