@@ -187,6 +187,7 @@ python () {
         # we apparently cannot set the task function directly, set it
         # to something falsy not non-None to avoid a warning, and use
         # prefuncs for what would be the task
+        # FIXME: modifying check_install does not invalidate cache hash
         d.setVar(newtask, "")
         d.setVarFlag(newtask, "prefuncs", "check_install")
         # FIXME we MUST not do that, but for some reason disabling network

@@ -35,6 +35,11 @@ RPM_MACROS ?= ""
 # FIXME must depend on file://'s in SRC_URI
 # extract metadata from specfile: PV, PR, SRC_URI, DEPENDS, PACKAGES
 python() {
+    # this block depends on the specfile
+    # FIXME: that's just the filename not its contents?  is that even the correct
+    # variable for the filename?
+    bb.parse.mark_dependency(d, d.getVar('SPECFILE_fn'))
+
     import re
     from specfile import Specfile
     import subprocess
@@ -48,6 +53,7 @@ python() {
     for macrodef in d.getVar("RPM_MACROS").split():
         macro, expansion = macrodef.split("=", 1)
         macro_defines.extend(["-D", f"{macro} {expansion}"])
+    # FIXME: make sure rpmspec does not (or does) use any system macros
     expanded_spec = subprocess.run(["rpmspec", "--parse", d.getVar('SPECFILE_fn'),
                                     ] + macro_defines,
                                    capture_output=True, check=True, text=True).stdout
