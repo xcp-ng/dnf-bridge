@@ -1,4 +1,4 @@
-# rpm-base.bbclass
+# rpm-runtime.bbclass
 #
 # Support for using RPM packages output by the recipe (whether built
 # by the recipe or prebuilt upstream).  Provides do_deploy to make the

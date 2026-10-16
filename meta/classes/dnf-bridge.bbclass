@@ -8,7 +8,7 @@
 # Recipes using this class should usually be generated using the
 # gen-dnf-proxy script.
 
-inherit rpm-base
+inherit rpm-runtime
 
 RECIPE_DEPLOY_DIR = "${DEPLOY_DIR_RPMS}/${PN}"
 
