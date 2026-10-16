@@ -11,40 +11,16 @@
 # manually, or through other means; see srpm-intree.bbclass for
 # automated extraction from specfile.
 
-inherit rpm-base
+inherit rpm-runtime
+inherit rpm-builddeps
 
-DEPENDS ?= ""
-PACKAGE_NEEDS_BOOTSTRAP ?= "0"
-XCPNGDEV_BUILD_OPTS ?= ""
+# Extra package(s) needed in the build environment, e.g. to get proper
+# %{dist} in Release
+DIST_RELEASE_PACKAGES ?= ""
 
-# FIXME: xcp-ng-dev commands should be provided by build-env.class
-XCPNGDEV = "${DEPLOY_DIR}/build-env/bin/xcp-ng-dev"
-
-
-BUILDDEPS_REPONAME = "bdeps"
-BUILDDEPSDIR = "${WORKDIR}/${BUILDDEPS_REPONAME}"
-
-# FIXME for each bdep package this pulls all packages built by the same recipe
-addtask builddeps_repo after do_unpack
-python do_builddeps_repo() {
-    recdepdict = {} # binrpm -> recipe
-
-    depends = d.getVar("DEPENDS").split()
-    rdeps = [dep for dep in depends if dep.startswith("rpm/")]
-    #bdeps = [dep for dep in depends if not dep.startswith("rpm/")]
-
-    dnfbridge.rtdeps.accumulate_rdeps_from_list(d, recdepdict, rdeps)
-    dnfbridge.rtdeps.create_dnfrepo_with_contents(d, d.getVar("BUILDDEPSDIR"), recdepdict.keys())
-}
-
-# do_builddeps_repo needs all DEPENDS' do_deploy_runtimedeps_
-python () {
-    PREFIX = 'rpm/'
-    rpm_depends = [dep for dep in d.getVar("DEPENDS").split() if dep.startswith(PREFIX)]
-    for dep in rpm_depends:
-        dep_rpm = dep[len(PREFIX):]
-        d.appendVarFlag("do_builddeps_repo", "depends", f" {dep}:do_deploy_runtimedeps_{dep_rpm}")
-}
+DEPENDS = " \
+ ${@ ' '.join('rpm/' + pkg for pkg in (d.getVar('DIST_RELEASE_PACKAGES').split())) } \
+"
 
 # Get a bumped PRAUTO to bump package revision with "+b<N>" on
 # rebuilds without source change.
@@ -108,25 +84,48 @@ do_build[prefuncs] += "package_get_auto_pr"
 # FIXME: set _topdir to ${WORKDIR} to stop polluting source
 addtask build after do_builddeps_repo
 # FIXME: do_deploy_runtimedeps should actually replace do_deploy there
-do_build[depends] = "build-env:do_deploy build-env:${@'do_build_bootstrap' if ${PACKAGE_NEEDS_BOOTSTRAP} else 'do_build' }"
+do_build[depends] = "build-env:do_container_image"
 do_build() {
     rm -rf ${WORKDIR}/RPMS ${WORKDIR}/SRPMS
 
-    case ${PACKAGE_NEEDS_BOOTSTRAP} in
-    0) maybe_bootstrap=--isarpm ;;
-    1) maybe_bootstrap=--bootstrap ;;
-    esac
+    # FIXME: dup from build-env.bb
+    REPOCONF=${WORKDIR}/bdeps.repo
+    cat > "$REPOCONF" <<EOF
+[bdeps]
+name=Local repository - build dependencies from ${BUILDDEPSDIR}
+baseurl=file:///local-repos/bdeps/
+enabled=1
+repo_gpgcheck=0
+gpgcheck=0
+priority=1
+EOF
 
-    env XCPNG_OCI_RUNNER=podman ${XCPNGDEV} container build "9.0" \
-        $maybe_bootstrap \
+    IMAGEID=$(cat ${BUILDENV_CONTAINERIDFILE})
+    IMAGEID=${IMAGEID#sha256:}
+
+    USERUID=$(id -u)
+    USERGID=$(id -g)
+
+    podman run \
+        --rm \
+        --security-opt label=disable \
+        --userns=keep-id:uid="$USERUID",gid="$USERGID" \
+        --user=root \
         --platform "${CONTAINER_ARCH}" \
-        --debug \
-        --no-network --no-update --disablerepo="*" \
-        --local-repo="${BUILDDEPSDIR}" --enablerepo="${BUILDDEPS_REPONAME}" \
-        --output-dir="${WORKDIR}" \
-        --define "autorev +b${PRAUTO}" \
-        ${XCPNGDEV_BUILD_OPTS} \
-        "${S}"
+        --log-level=debug \
+        --network=none \
+        --volume "${S}:/home/builder/srpm:ro" \
+        --volume "${BUILDENV_DEPLOY_DIR}/build-rpm.sh:/home/builder/build-rpm.sh:ro" \
+        --volume "${WORKDIR}:/home/builder/output:rw" \
+        --volume "${BUILDDEPSDIR}:/local-repos/bdeps:ro" \
+        --volume "$REPOCONF:/etc/yum.repos.d/bdeps.repo:ro" \
+        "$IMAGEID" \
+        \
+        /home/builder/build-rpm.sh \
+            --src /home/builder/srpm \
+            --uid "$USERUID" \
+            --autorev "+b${PRAUTO}" \
+            --install-first "${@d.getVar('DIST_RELEASE_PACKAGES').strip()}"
 }
 
 SSTATETASKS += "do_build"
@@ -144,7 +143,7 @@ do_build[network] = "1"
 
 addtask checkinstall after do_build
 do_checkinstall[noexec] = "1"
-do_checkinstall[depends] = "build-env:do_deploy build-env:do_build_bootstrap"
+do_checkinstall[depends] = "build-env:do_container_image"
 python check_install() {
     import subprocess
 

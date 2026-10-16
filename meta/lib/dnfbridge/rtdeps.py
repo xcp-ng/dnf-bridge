@@ -40,6 +40,7 @@ def accumulate_rdeps_from_list(d, depdict: dict[str, str], newdeps: list[str]) -
         accumulate_rdeps_from_file(d, depdict, os.path.join(rtdepsdir, recipename, f"{rpmname}.rtdeps"))
 
 def create_dnfrepo_with_contents(d, target_dir: str, packages: Iterable[str]) -> None:
+    import subprocess
     if os.path.exists(target_dir):
         shutil.rmtree(target_dir)
     os.makedirs(target_dir)
@@ -50,6 +51,8 @@ def create_dnfrepo_with_contents(d, target_dir: str, packages: Iterable[str]) ->
         # FIXME we should really only copy the specific RPM, but we'd need its nvr for this
         oe.path.copyhardlinktree(os.path.join(rpmsdeploy_dir, recipename, "RPMS"),
                                  os.path.join(target_dir, pkg))
+    subprocess.check_call(["createrepo_c", "--quiet", "--compatibility", "."],
+                          cwd=target_dir)
 
 # FIXME should warn/error when selected preferred does not RPROVIDES pkg
 # FIXME should pick a default one in absence of PREFERRED_
