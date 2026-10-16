@@ -6,6 +6,8 @@
 # package do_deploy_runtimedeps_* to recursively ensure all its
 # runtime dependencies are similarly made available.
 
+inherit rpm-base
+
 RDEPENDS ?= ""
 
 # make PACKAGES and the names they RPROVIDE visible in the *recipe*
@@ -15,10 +17,7 @@ RDEPENDS ?= ""
 provided_packages = "${PACKAGES} ${@ ' '.join((d.getVar(f'RPROVIDES:{pkg}') or '') for pkg in (d.getVar('PACKAGES' or '')).split())}"
 PROVIDES = "${@ ' '.join(f"rpm/{p}" for p in d.getVar('provided_packages').split())}"
 
-DEPLOY_DIR_RPMS = "${DEPLOY_DIR}/rpms"
 RECIPE_DEPLOY_DIR = "${DEPLOY_DIR_RPMS}/${PN}"
-
-RUNTIMEDEPSDIR = "${TMPDIR}/rtdeps"
 
 addtask deploy after do_build
 do_deploy() {
