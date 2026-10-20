@@ -141,9 +141,6 @@ python do_build_setscene () {
 do_build[network] = "1"
 
 
-addtask checkinstall after do_build
-do_checkinstall[noexec] = "1"
-do_checkinstall[depends] = "build-env:do_container_image"
 python check_install() {
     import subprocess
 
@@ -158,20 +155,42 @@ python check_install() {
     dnfbridge.rtdeps.accumulate_rdeps_from_list(d, recdepdict, [this_package])
     dnfbridge.rtdeps.create_dnfrepo_with_contents(d, rdepsdir, recdepdict.keys())
 
-    cmd = ['env', 'XCPNG_OCI_RUNNER=podman', d.getVar('XCPNGDEV'), 'container', 'run', '9.0',
-           "--bootstrap",       # we don't care about the --isarpm contents here
+    # FIXME: dup from build-env.bb
+    repoconf = d.getVar('WORKDIR') + "/rtdeps.repo"
+    with open(repoconf, "w") as f:
+        f.write("""[bdeps]
+name=Local repository - runtime dependencies for ${this_package}
+baseurl=file:///local-repos/rtdeps/
+enabled=1
+repo_gpgcheck=0
+gpgcheck=0
+priority=1
+""")
+
+    with open(d.getVar('BUILDENV_CONTAINERIDFILE')) as f:
+        imageid = f.read().strip()
+    hashtype, imageid = imageid.split(':')
+    assert hashtype == 'sha256'
+
+    cmd = ['podman', 'run', '--rm',
+           '--security-opt', 'label=disable',
            '--platform', d.getVar('CONTAINER_ARCH'),
-           '--debug',
-           '--no-network', '--no-update', '--disablerepo=*',
-           '--local-repo', f"rdeps:{rdepsdir}", '--enablerepo', 'rdeps',
-           d.getVar('XCPNGDEV_BUILD_OPTS'),
-           '--',
-           'sudo', 'dnf', 'install', '-y', this_package]
+           '--log-level=debug',
+           '--network=none',
+           '--volume', rdepsdir + ':/local-repos/rtdeps:ro',
+           '--volume', repoconf + ':/etc/yum.repos.d/rtdeps.repo:ro',
+           imageid,
+
+           'dnf', 'install', '-y', this_package]
     bb.debug(1, f"Running: {' '.join(cmd)}")
     subprocess.check_call(cmd)
 }
 
-# do_checkinstall needs each PACKAGES' do_checkinstall_
+addtask checkinstall after do_build
+do_checkinstall[noexec] = "1"
+do_checkinstall[depends] = "build-env:do_container_image"
+
+# create each PACKAGES' do_checkinstall_ making up do_checkinstall
 python () {
     import re
     pn = d.getVar('PN')
