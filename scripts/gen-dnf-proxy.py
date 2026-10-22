@@ -28,6 +28,8 @@ import dnf # type: ignore
 from dnf.package import Package # type: ignore
 import hawkey # type: ignore
 
+### data structures and helper funcs
+
 class ArchRpmData:
     "An index of RPMs of a given arch produced by a given SRPM"
     def __init__(self, srpm_data: SrpmData, bin_db: dnf.Base, *,
@@ -286,6 +288,8 @@ def altarch_aware_variable(varname: str, repo_config: dict, arch: str,
     assert isinstance(repo_config[varname], str), f"expected a str: repo_config[{varname}] = {repo_config[varname]!r}"
     return repo_config[varname]
 
+### level 2 funcs - the technical job
+
 def write_recipe(srpm_data: SrpmData, recipesdir: Path, repo_config: dict, bridge_data: BridgeData
                  ) -> None:
     """Write a .bb file from info collected in SrpmData object.
@@ -434,13 +438,18 @@ def compute_bridge_data(archs: list[str], repo_configs: list[dict]) -> BridgeDat
             dbs[arch].fill_sack(load_system_repo=False)
         dbs['src'].fill_sack(load_system_repo=False)
 
-        # get repo metadata for all packages, per repo_config
+        ## get repo metadata for all packages from dnf, per repo_config
+
         per_repo_rpms_src: list[list[Package]] = [
             sum((list(dbs['src'].sack.query().filter(latest=1, reponame=repoid).available())
                  for repoid in srcrepos), [])
             for srcrepos in srcrepo_sections
         ]
         logging.info(f"packages per repo: {[len(l) for l in per_repo_rpms_src]}")
+
+        ## incrementally build bridge data
+
+        bridge_data = BridgeData(dbs['src'], {arch: dbs[arch] for arch in archs})
 
         # altarch handling needs for each arch all suffix patterns from all repos
         altarch_suffixes = {}
@@ -450,15 +459,14 @@ def compute_bridge_data(archs: list[str], repo_configs: list[dict]) -> BridgeDat
                     altarch_suffixes[arch] = []
                 altarch_suffixes[arch].append(altarch_data["suffix"])
 
-        # incrementally build bridge data
-        bridge_data = BridgeData(dbs['src'], {arch: dbs[arch] for arch in archs})
-
         for repo_config, rpms_src in zip(repo_configs, per_repo_rpms_src):
             exclude_srpm = repo_config.get("exclude_srpm", [])
             bridge_data.exclude_srpm.update(exclude_srpm)
             altarch_data = repo_config.get("altarch", {})
 
-            # add repo to dnf config
+            # read altarch src repos, needed to match the altarch RPMs
+            # because their %dist suffix make them impossible to match
+            # with the official SRPMs
             bridge_data.per_repo_altarch_src_dbs.append({})
             for arch, this_altarch_data in altarch_data.items():
                 altarch_conf, this_altarch_data["srcdb"] = new_dnf_db(
@@ -468,14 +476,18 @@ def compute_bridge_data(archs: list[str], repo_configs: list[dict]) -> BridgeDat
                 this_altarch_data["srcdb"].fill_sack(load_system_repo=False)
                 bridge_data.per_repo_altarch_src_dbs[-1][arch] = this_altarch_data["srcdb"]
 
+            # initial import of package-local data
             bridge_data.per_repo_rpms_src.append(rpms_src)
             for pkg in filter_dup_packages(rpms_src, bridge_data=bridge_data):
                 if pkg.name in exclude_srpm:
                     logging.info("Ignoring excluded package: %s", pkg)
                     continue
                 bridge_data.insert_pkg(pkg, altarch_data=altarch_data)
+
         # this makes rpm-against-srpms check against all repos, but it
         # should not be a problem?
+
+        # derive info not available at package level
         logging.info("STAGE dependency resolution")
         bridge_data.resolve_pkgs(altarch_suffixes)
 
@@ -521,9 +533,12 @@ def filter_dup_packages(l: list[Package], *, bridge_data: BridgeData) -> list[Pa
 
 def write_bridge_layer(outlayer: Path, repo_config: dict, packages: list[Package],
                        bridge_data: BridgeData) -> None:
-    """Create recipe files, and config files for tunable defaults.
+    """Create recipe files, and config files for tunable defaults, for one [[repo]].
     """
     logging.debug("write_bridge_layer('%s') ...", repo_config['name'])
+
+    ## the recipes
+
     recipesdir = outlayer / repo_config["recipes"]
     if os.path.exists(recipesdir):
         shutil.rmtree(recipesdir)
@@ -532,6 +547,8 @@ def write_bridge_layer(outlayer: Path, repo_config: dict, packages: list[Package
         if srpm_data.srpm not in packages:
             continue
         write_recipe(srpm_data, recipesdir, repo_config, bridge_data)
+
+    ## config file for mirror variables
 
     conffile = outlayer / "conf" / repo_config["default_bbvar_conf"]
     with open(conffile, "w") as f:
@@ -549,6 +566,8 @@ SRC_URI[vardepsexclude] += "\\
  {' \\\n '.join(altarch_data["baseurl_bbvar"] for altarch_data in altarch_defs)} \\
 "
 ''', end='', file=f)
+
+### level 1 funcs - high-level organization
 
 def cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate a proxy BitBake layer for a DNF repo")
@@ -575,6 +594,9 @@ def do_setup() -> Path:
     return Path(args.output_layer)
 
 def do_read(layer: Path) -> BridgeData:
+
+    ## read config
+
     with open(layer / "conf/dnf-bridge.toml", "rb") as fp:
         config = tomllib.load(fp)
 
@@ -591,24 +613,32 @@ def do_read(layer: Path) -> BridgeData:
                         "default_bbvar_conf baseurl_bbvar basesrcurl_bbvar").split():
             assert repokey in repo, f"{repokey!r} not in config['repo']"
 
+    ## import dnf repodata and compute recipe data from them
+
     bridge_data = compute_bridge_data(config["archs"], config["repo"])
     bridge_data.allowed_mismatched_checksums = config.get("allowed_mismatched_checksums", [])
     bridge_data.layer = layer
     bridge_data.config = config
-    return bridge_data
 
-def format_repo_info(repo: dnf.repo.Repo) -> str:
-    return (f"revision: {repo._repo.getRevision()},"
-            f" updated-utc: {time.asctime(time.gmtime(repo._repo.getMaxTimestamp()))}")
+    return bridge_data
 
 def do_write(bridge_data: BridgeData, dnf_bridge_version: str) -> None:
     logging.info("STAGE writing out layer")
     assert bridge_data.layer
     assert bridge_data.config
+
+    ## the layers themselves
+
     for repo_config, packages in zip(bridge_data.config["repo"], bridge_data.per_repo_rpms_src):
         write_bridge_layer(bridge_data.layer, repo_config, packages, bridge_data)
 
-    # metadata to relate to repo changes (mimics "dnf repolist -v" implementation)
+    ## metadata to relate to repo changes (mimics "dnf repolist -v" implementation)
+
+    def format_repo_info(repo: dnf.repo.Repo) -> str:
+        return (f"revision: {repo._repo.getRevision()},"
+                f" updated-utc: {time.asctime(time.gmtime(repo._repo.getMaxTimestamp()))}")
+
+    # extract serial number and modification date of all repos
     repo_info: dict[str, str] = {}
     for repoid, repo in bridge_data.src_db.repos.items():
         assert isinstance(repo, dnf.repo.Repo)
@@ -622,13 +652,14 @@ def do_write(bridge_data: BridgeData, dnf_bridge_version: str) -> None:
                 key = f"{repoid}-{arch}"
                 assert key not in repo_info
                 repo_info[key] = format_repo_info(repo)
+    # record them in stable order
     with open(bridge_data.layer / "conf" / "repo_info", "w") as f:
         print(f"generated-by: {'untracked changes on ' if is_dirty else ''}{dnf_bridge_version}", file=f)
-        # 2. serial number and modification date of all repos
         for repoid, info in sorted(repo_info.items(), key=lambda kv: kv[0]):
             print(f"{repoid}: {info}", file=f)
 
-    # PREFERRED_RPM_RPROVIDER for all virtual packages
+    ## PREFERRED_RPM_RPROVIDER for all virtual packages
+
     with open(bridge_data.layer / "conf" / "default-providers.conf", "w") as f:
         print('DEFAULT_RPM_RPROVIDERS = ""', file=f)
         for virtual, vproviders in sorted(bridge_data.virtual_providers.items(),
@@ -639,7 +670,7 @@ def do_write(bridge_data: BridgeData, dnf_bridge_version: str) -> None:
 DEFAULT_RPM_RPROVIDERS += "{virtual}={vproviders[0].name if vproviders else ''}"
 ''', end='', file=f)
 
-    # diagnostics helpers
+    ## diagnostics helpers
 
     with open(bridge_data.layer / "conf" / "unresolved.log", "w") as f:
         print("Requires that were seen as not satisfiable in original repo:", file=f)
@@ -655,6 +686,8 @@ For arch {arch}:
         for srpmname, details in sorted(bridge_data.version_inconsistencies.items(),
                                         key=lambda kv: kv[0]):
             print(f"{srpmname}: {details}", file=f)
+
+### toplevel
 
 if __name__ == '__main__':
     # we'll use git at the very last step, don't wait to fail
