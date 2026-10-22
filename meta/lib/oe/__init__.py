@@ -13,4 +13,6 @@ __path__ = extend_path(__path__, __name__)
 #             "packagegroup", "sstatesig", "lsb", "cachedpath", "license", "qemu", \
 #             "reproducible", "rust", "buildcfg", "go", "spdx30_tasks", "spdx_common", \
 #             "cve_check", "tune", "classextend", "purl"]
+
+# dnf-bridge only imports a few of these:
 BBIMPORTS = ["path", "utils", "sstatesig"]
