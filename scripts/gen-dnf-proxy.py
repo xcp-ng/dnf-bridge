@@ -376,6 +376,11 @@ def new_dnf_db(arch: str, dnftmpdir: str) -> dnf.Base:
 
 def compute_bridge_data(archs: list[str], repo_configs: list[dict]) -> BridgeData:
     """Fetches data from DNF repo and compute the bits needed for bitbake.
+
+    The rpm dependencies have too much expressivity to be used as-is,
+    and identifying the requirement behind each use of an idiom is not
+    a realistic approach.  Let dnf resolve them to concrete packages
+    instead, so we can use virtual package names to not loose flexibility.
     """
     confs: dict[str, dnf.conf.Conf] = {}
     dbs = {}
@@ -622,7 +627,7 @@ def do_read(layer: Path) -> BridgeData:
 
     return bridge_data
 
-def do_write(bridge_data: BridgeData, dnf_bridge_version: str) -> None:
+def do_write(bridge_data: BridgeData, dnf_bridge_version: str, is_dirty: bool) -> None:
     logging.info("STAGE writing out layer")
     assert bridge_data.layer
     assert bridge_data.config
@@ -716,7 +721,7 @@ if __name__ == '__main__':
 
     layer = do_setup()
     bridge_data = do_read(layer)
-    do_write(bridge_data, dnf_bridge_version)
+    do_write(bridge_data, dnf_bridge_version, is_dirty)
     logging.info("STAGE finished")
 
 # recipe for debugging:
