@@ -44,10 +44,6 @@ class ArchRpmData:
         # list of lines to log RPM's unresolved reldep's
         self.unresolved: list[str] = []
 
-def srpm_sourcerpm_name_of(srpm: Package) -> str:
-    "name of a srpm package suitable for a filter(sourcerpm=...) query"
-    return f"{srpm.name}-{srpm.version}-{srpm.release}.src.rpm" # no epoch here
-
 class SrpmData:
     "Data about a given SRPM and the RPMs it produced"
     def __init__(self, srpm: Package, bin_dbs: dict[str, dnf.Base], bridge_data: BridgeData,
@@ -243,14 +239,58 @@ class BridgeData:
 
         self.arch_providers_cache[arch][rel] = providers[0].name
 
-def reldep_to_virtual(rel: hawkey.Reldep) -> str:
-    relstr = str(rel)
-    if relstr[0] == '(' and relstr[-1] == ')':
-        relstr = relstr[1:-1]
-    return "virtual/" + (relstr.replace(">=", "ge").replace(">", "gt")
-                         .replace("<=", "le").replace("<", "lt")
-                         .replace("=", "eq")
-                         .translate(NAME_SANITIZER))
+def altarch_aware_variable(varname: str, repo_config: dict, arch: str,
+                           only_altarch: bool = False) -> str | None:
+    "Deal with variables being possibly overridden in altarch case"
+    if "altarch" in repo_config and arch in repo_config["altarch"]:
+        try:
+            url = repo_config["altarch"][arch][varname]
+        except KeyError as ex:
+            raise KeyError(f"expecting '{varname}' in repo_config['altarch'][{arch}]") from ex
+        assert isinstance(url, str)
+        return url
+    if only_altarch:
+        return None
+    assert isinstance(repo_config[varname], str), f"expected a str: repo_config[{varname}] = {repo_config[varname]!r}"
+    return repo_config[varname]
+
+def filter_dup_packages(l: list[Package], *, bridge_data: BridgeData) -> list[Package]:
+    """Filter out packages appearing in more than one repo/section.
+
+    This deals with a number of Alma binary RPMs appearing in more
+    than one section of the distro, making sure they have same
+    checksum and select one.
+
+    An exception mechanism is provided to deal with bugs, like in Alma
+    10.1 where epel-release-almalinux-altarch appears both in Alma and
+    EPEL, and have different checksums.
+    """
+    # prepare to index package by (rpmname, chksum)
+    pkg_info = list(zip(((os.path.basename(p.remote_location()), p.chksum) for p in l),
+                        l))
+    # unicity of rpmname, and of (rpmname, chksum)
+    unique_packages_contents = set(info for (info, _pkg) in pkg_info)
+    unique_packages_by_rpmname = dict((rpmname, pkg)
+                                      for ((rpmname, _chksum), pkg) in pkg_info)
+
+    # sanity check: dups must have identical contents
+    if len(unique_packages_by_rpmname) and next(iter(unique_packages_by_rpmname.values())).name in bridge_data.allowed_mismatched_checksums:
+        logging.info("ignoring potential cksum mismatch for %s", next(iter(unique_packages_by_rpmname.values())).name)
+    else:
+        assert len(unique_packages_by_rpmname) == len(unique_packages_contents), (
+            "identical rpmname with different chksum"
+            f" (len({unique_packages_by_rpmname})==len({unique_packages_contents})) in {l}:"
+            f" {unique_packages_contents}")
+
+    if len(unique_packages_by_rpmname) == len(l):
+        return l
+
+    assert unique_packages_by_rpmname
+    assert len(unique_packages_by_rpmname) < len(l)
+    logging.debug("filter_dup_packages: filtered out %s duplicate packages",
+                  len(l) - len(unique_packages_by_rpmname))
+    unique_packages = dict(unique_packages_by_rpmname)
+    return list(unique_packages.values())
 
 def format_arch_dependent_list(varname: str, arch_items: dict[str, list[str]]) -> str:
     """Format a variable with potentially-different values per arch.
@@ -273,82 +313,20 @@ def format_arch_dependent_list(varname: str, arch_items: dict[str, list[str]]) -
     return '\n'.join(f'{varname}:{arch} = "{lines}"'
                      for arch, lines in arch_items_content_lines.items())
 
-def altarch_aware_variable(varname: str, repo_config: dict, arch: str,
-                           only_altarch: bool = False) -> str | None:
-    "Deal with variables being possibly overridden in altarch case"
-    if "altarch" in repo_config and arch in repo_config["altarch"]:
-        try:
-            url = repo_config["altarch"][arch][varname]
-        except KeyError as ex:
-            raise KeyError(f"expecting '{varname}' in repo_config['altarch'][{arch}]") from ex
-        assert isinstance(url, str)
-        return url
-    if only_altarch:
-        return None
-    assert isinstance(repo_config[varname], str), f"expected a str: repo_config[{varname}] = {repo_config[varname]!r}"
-    return repo_config[varname]
+def reldep_to_virtual(rel: hawkey.Reldep) -> str:
+    relstr = str(rel)
+    if relstr[0] == '(' and relstr[-1] == ')':
+        relstr = relstr[1:-1]
+    return "virtual/" + (relstr.replace(">=", "ge").replace(">", "gt")
+                         .replace("<=", "le").replace("<", "lt")
+                         .replace("=", "eq")
+                         .translate(NAME_SANITIZER))
+
+def srpm_sourcerpm_name_of(srpm: Package) -> str:
+    "name of a srpm package suitable for a filter(sourcerpm=...) query"
+    return f"{srpm.name}-{srpm.version}-{srpm.release}.src.rpm" # no epoch here
 
 ### level 2 funcs - the technical job
-
-def write_recipe(srpm_data: SrpmData, recipesdir: Path, repo_config: dict, bridge_data: BridgeData
-                 ) -> None:
-    """Write a .bb file from info collected in SrpmData object.
-    """
-    pkg = srpm_data.srpm
-    fname = f"{pkg.name}_{f'{pkg.epoch}:' if pkg.epoch else ''}{pkg.version}-{pkg.release}.bb"
-    with open(recipesdir / fname, "w") as r:
-        maybeepochline = f'PE = "{pkg.epoch}"\n' if pkg.epoch else ""
-        arch_packages = {arch: [rpm.name for rpm in arch_rpmdata.rpms]
-                         for arch, arch_rpmdata in srpm_data.arch_rpmdata.items()}
-        arch_packages_lines = format_arch_dependent_list('PACKAGES', arch_packages)
-
-        print(f"""# File generated by {os.path.basename(sys.argv[0])}, do not modify
-
-inherit dnf-bridge
-
-PN = "{pkg.name}"
-{maybeepochline}PV = "{pkg.version}"
-PR = "{pkg.release}"
-{arch_packages_lines}
-""", end='', file=r)
-
-        url = (pkg.remote_location(schemes=["https", "http", "file"])
-               .replace(repo_config["basesrcurl"], f"${{{repo_config['basesrcurl_bbvar']}}}"))
-        print(f'\nSRC_URI = "{url};name=src;unpack=0"', file=r)
-        assert pkg.chksum[0] == hawkey.chksum_type("sha256")
-        print(f'SRC_URI[src.sha256sum] = "{pkg.chksum[1].hex()}"', file=r)
-
-        for arch, arch_rpmdata in srpm_data.arch_rpmdata.items():
-            if arch_rpmdata.unresolved:
-                print(f'''
-## Requires ({arch}) that were seen as not satisfiable in original repo:
-{'\n'.join(f"# - {line}" for line in sorted(arch_rpmdata.unresolved))}
-''', end='', file=r)
-
-        all_virtual_provides: dict[str, set[str]] = {}
-        for arch, arch_rpmdata in srpm_data.arch_rpmdata.items():
-            all_virtual_provides[arch] = set()
-            arch_baseurl = altarch_aware_variable("baseurl", repo_config, arch)
-            arch_baseurl_bbvar = altarch_aware_variable("baseurl_bbvar", repo_config, arch).format(arch=arch)
-            for binpkg in arch_rpmdata.rpms:
-                url = (binpkg.remote_location(schemes=["https", "http", "file"])
-                       .replace(arch_baseurl, "${%s}" % arch_baseurl_bbvar))
-                print(f'\nSRC_URI:append = " {url};name={arch}_{binpkg.name};unpack=0"', file=r)
-                assert binpkg.chksum[0] == hawkey.chksum_type("sha256")
-                print(f'SRC_URI[{arch}_{binpkg.name}.sha256sum] = "{binpkg.chksum[1].hex()}"', file=r)
-
-                if binpkg in bridge_data.virtual_provides:
-                    print(f'RPROVIDES:{binpkg.name}:append:{arch} = " {" ".join(sorted(bridge_data.virtual_provides[binpkg]))}"', file=r)
-                    all_virtual_provides[arch].update(bridge_data.virtual_provides[binpkg])
-
-        print("", file=r)
-        for rpmname, arch_rpm in srpm_data.rpms_by_arch.items():
-            arch_rdeps = {
-                arch: sorted(arch_rpmdata.rdepends[arch_rpm[arch]])
-                for arch, arch_rpmdata in srpm_data.arch_rpmdata.items()
-                if arch in arch_rpm
-            }
-            print(format_arch_dependent_list(f'RDEPENDS:{rpmname}', arch_rdeps), file=r)
 
 def new_dnf_db(arch: str, dnftmpdir: str) -> dnf.Base:
     "Build a new DNF config isolated from any system dnf config files"
@@ -493,44 +471,6 @@ def compute_bridge_data(archs: list[str], repo_configs: list[dict]) -> BridgeDat
 
         return bridge_data
 
-def filter_dup_packages(l: list[Package], *, bridge_data: BridgeData) -> list[Package]:
-    """Filter out packages appearing in more than one repo/section.
-
-    This deals with a number of Alma binary RPMs appearing in more
-    than one section of the distro, making sure they have same
-    checksum and select one.
-
-    An exception mechanism is provided to deal with bugs, like in Alma
-    10.1 where epel-release-almalinux-altarch appears both in Alma and
-    EPEL, and have different checksums.
-    """
-    # prepare to index package by (rpmname, chksum)
-    pkg_info = list(zip(((os.path.basename(p.remote_location()), p.chksum) for p in l),
-                        l))
-    # unicity of rpmname, and of (rpmname, chksum)
-    unique_packages_contents = set(info for (info, _pkg) in pkg_info)
-    unique_packages_by_rpmname = dict((rpmname, pkg)
-                                      for ((rpmname, _chksum), pkg) in pkg_info)
-
-    # sanity check: dups must have identical contents
-    if len(unique_packages_by_rpmname) and next(iter(unique_packages_by_rpmname.values())).name in bridge_data.allowed_mismatched_checksums:
-        logging.info("ignoring potential cksum mismatch for %s", next(iter(unique_packages_by_rpmname.values())).name)
-    else:
-        assert len(unique_packages_by_rpmname) == len(unique_packages_contents), (
-            "identical rpmname with different chksum"
-            f" (len({unique_packages_by_rpmname})==len({unique_packages_contents})) in {l}:"
-            f" {unique_packages_contents}")
-
-    if len(unique_packages_by_rpmname) == len(l):
-        return l
-
-    assert unique_packages_by_rpmname
-    assert len(unique_packages_by_rpmname) < len(l)
-    logging.debug("filter_dup_packages: filtered out %s duplicate packages",
-                  len(l) - len(unique_packages_by_rpmname))
-    unique_packages = dict(unique_packages_by_rpmname)
-    return list(unique_packages.values())
-
 def write_bridge_layer(outlayer: Path, repo_config: dict, packages: list[Package],
                        bridge_data: BridgeData) -> None:
     """Create recipe files, and config files for tunable defaults, for one [[repo]].
@@ -566,6 +506,66 @@ SRC_URI[vardepsexclude] += "\\
  {' \\\n '.join(altarch_data["baseurl_bbvar"] for altarch_data in altarch_defs)} \\
 "
 ''', end='', file=f)
+
+def write_recipe(srpm_data: SrpmData, recipesdir: Path, repo_config: dict, bridge_data: BridgeData
+                 ) -> None:
+    """Write a .bb file from info collected in SrpmData object.
+    """
+    pkg = srpm_data.srpm
+    fname = f"{pkg.name}_{f'{pkg.epoch}:' if pkg.epoch else ''}{pkg.version}-{pkg.release}.bb"
+    with open(recipesdir / fname, "w") as r:
+        maybeepochline = f'PE = "{pkg.epoch}"\n' if pkg.epoch else ""
+        arch_packages = {arch: [rpm.name for rpm in arch_rpmdata.rpms]
+                         for arch, arch_rpmdata in srpm_data.arch_rpmdata.items()}
+        arch_packages_lines = format_arch_dependent_list('PACKAGES', arch_packages)
+
+        print(f"""# File generated by {os.path.basename(sys.argv[0])}, do not modify
+
+inherit dnf-bridge
+
+PN = "{pkg.name}"
+{maybeepochline}PV = "{pkg.version}"
+PR = "{pkg.release}"
+{arch_packages_lines}
+""", end='', file=r)
+
+        url = (pkg.remote_location(schemes=["https", "http", "file"])
+               .replace(repo_config["basesrcurl"], f"${{{repo_config['basesrcurl_bbvar']}}}"))
+        print(f'\nSRC_URI = "{url};name=src;unpack=0"', file=r)
+        assert pkg.chksum[0] == hawkey.chksum_type("sha256")
+        print(f'SRC_URI[src.sha256sum] = "{pkg.chksum[1].hex()}"', file=r)
+
+        for arch, arch_rpmdata in srpm_data.arch_rpmdata.items():
+            if arch_rpmdata.unresolved:
+                print(f'''
+## Requires ({arch}) that were seen as not satisfiable in original repo:
+{'\n'.join(f"# - {line}" for line in sorted(arch_rpmdata.unresolved))}
+''', end='', file=r)
+
+        all_virtual_provides: dict[str, set[str]] = {}
+        for arch, arch_rpmdata in srpm_data.arch_rpmdata.items():
+            all_virtual_provides[arch] = set()
+            arch_baseurl = altarch_aware_variable("baseurl", repo_config, arch)
+            arch_baseurl_bbvar = altarch_aware_variable("baseurl_bbvar", repo_config, arch).format(arch=arch)
+            for binpkg in arch_rpmdata.rpms:
+                url = (binpkg.remote_location(schemes=["https", "http", "file"])
+                       .replace(arch_baseurl, "${%s}" % arch_baseurl_bbvar))
+                print(f'\nSRC_URI:append = " {url};name={arch}_{binpkg.name};unpack=0"', file=r)
+                assert binpkg.chksum[0] == hawkey.chksum_type("sha256")
+                print(f'SRC_URI[{arch}_{binpkg.name}.sha256sum] = "{binpkg.chksum[1].hex()}"', file=r)
+
+                if binpkg in bridge_data.virtual_provides:
+                    print(f'RPROVIDES:{binpkg.name}:append:{arch} = " {" ".join(sorted(bridge_data.virtual_provides[binpkg]))}"', file=r)
+                    all_virtual_provides[arch].update(bridge_data.virtual_provides[binpkg])
+
+        print("", file=r)
+        for rpmname, arch_rpm in srpm_data.rpms_by_arch.items():
+            arch_rdeps = {
+                arch: sorted(arch_rpmdata.rdepends[arch_rpm[arch]])
+                for arch, arch_rpmdata in srpm_data.arch_rpmdata.items()
+                if arch in arch_rpm
+            }
+            print(format_arch_dependent_list(f'RDEPENDS:{rpmname}', arch_rdeps), file=r)
 
 ### level 1 funcs - high-level organization
 
