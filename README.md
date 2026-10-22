@@ -2,7 +2,9 @@
 
 This is a BitBake layer providing tools to maintain a layer acting as
 a bridge to a DNF repository, and classes to support that bridge
-layer.
+layer.  The bridge later is built using `python-dnf` from the
+repository metadata, the RPMs are downloaded on-demand during the
+build.
 
 It has been initially written to maintain a bridge to AlmaLinux 10 DNF
 repositories, for the build of XCP-ng 9.0.
@@ -49,7 +51,7 @@ If they match more than one, a ad-hoc "virtual package" is created,
 which each matching packages explicitly RPROVIDES, and each package
 requiring it RDEPENDS on.
 
-If match zero package, the dependency will be dropped, but every such
+If they match zero package, the dependency will be dropped, but every such
 drop will be listed both in the recipe and in `conf/unresolved.log` in
 the output layer.  Some reasons for them could be (non-exhaustive list):
 
@@ -61,7 +63,7 @@ the output layer.  Some reasons for them could be (non-exhaustive list):
   or pertaining to optional packages not in this particular
   distro/components (`if sdubby`).  We could one day just avoid
   reporting them.
-- an dependency genuinely missing, causing a package to be
+- a genuinely missing dependency, causing a package to be
   uninstallable from the repo being bridged
 - a binary package without a matching source package (seen as a bug,
   not in `gen-dnf-proxy`, but rather in the repo being bridged)
