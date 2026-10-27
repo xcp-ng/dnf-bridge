@@ -49,10 +49,7 @@ def setup_hosttools_dir(dest, toolsvar, d, fatal=True):
             if os.path.islink(srctool) and os.path.basename(os.readlink(srctool)) == 'ccache':
                 srctool = bb.utils.which(path, tool, executable=True, direction=1)
             if srctool:
-                if tool == "ld" or tool.startswith("ld."):
-                    write_ld_wrapper(srctool, desttool)
-                else:
-                    os.symlink(srctool, desttool)
+                os.symlink(srctool, desttool)
             else:
                 notfound.append(tool)
 
