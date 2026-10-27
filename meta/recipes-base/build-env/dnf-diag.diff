@@ -1,0 +1,15 @@
+--- /usr/lib/python3.12/site-packages/dnf/conf/read.py.orig	2026-10-20 14:20:59.736344502 +0000
++++ /usr/lib/python3.12/site-packages/dnf/conf/read.py	2026-10-20 14:21:25.221239018 +0000
+@@ -56,9 +56,9 @@
+             try:
+                 for r in self._get_repos(repofn):
+                     yield r
+-            except dnf.exceptions.ConfigError:
+-                logger.warning(_("Warning: failed loading '%s', skipping."),
+-                               repofn)
++            except dnf.exceptions.ConfigError as ex:
++                logger.warning(_("Warning: failed loading '%s', skipping: %s."),
++                               repofn, ex)
+ 
+     def _build_repo(self, parser, id_, repofn):
+         """Build a repository using the parsed data."""
