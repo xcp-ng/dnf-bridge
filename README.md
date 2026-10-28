@@ -146,3 +146,32 @@ podman run --rm -it \
 
 FIXME: is the `--platform` file actually pertinent, other than to
 reuse a container image we already have?
+
+### dependency loops
+
+Many repositories of RPM files have loops in their runtime dependency
+graph.  Since we turn those runtime dependencies into Bitbake task
+dependencies, we must do something to have loops at that level, or
+Bitbake just fails to build its task graph and reports the loop.
+
+Those loops can be explicitly broken, typically in
+`conf/upstream-tuning.conf` in your own layer, with for example:
+```
+LOOPCUT[redhat-rpm-config] = " \
+ pyproject-srpm-macros \
+ python-srpm-macros \
+ go-srpm-macros \
+ fonts-srpm-macros \
+ forge-srpm-macros \
+"
+```
+
+This `LOOPCUT` declaration takes care of removing those packages from
+the relevant `RDEPENDS` variables that reflect the RPM `Requires`
+fields, and still include them in recursive runtime dependency lists
+so `dnf` is able to satisfy the dependencies declated in RPMs.
+
+Setting up `LOOPCUT` declarations is a manual process.  New ones
+typically have to be written when new build-dependency brings in a new
+loop into play, or when updating to a new version of an upstream
+bridged layer when new RPM dependencies bring such new loops.

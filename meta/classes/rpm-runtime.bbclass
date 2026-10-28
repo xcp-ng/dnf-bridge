@@ -7,6 +7,7 @@
 # runtime dependencies are similarly made available.
 
 inherit rpm-base
+inherit loopcut
 
 RDEPENDS ?= ""
 

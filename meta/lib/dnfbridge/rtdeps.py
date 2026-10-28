@@ -20,6 +20,7 @@ def accumulate_rdeps_from_list(d, depdict: dict[str, str], newdeps: list[str]) -
     "Accumulate dependencies from `newdeps` list into `depdict`"
     bb.debug(1, f" accumulate_rdeps_from_list({newdeps}) ...")
     rtdepsdir = d.getVar("RUNTIMEDEPSDIR")
+    loopcuts = d.getVarFlags("LOOPCUT") or {}
     for dep in newdeps:
         bb.debug(1, f"  accumulate_rdeps_from_list({dep}) ...")
         # strip any rpm/ suffix comming from a DEPENDS
@@ -38,6 +39,10 @@ def accumulate_rdeps_from_list(d, depdict: dict[str, str], newdeps: list[str]) -
         recipename = os.path.basename(os.readlink(os.path.join(rtdepsdir, "_", dep)))
         depdict[rpmname] = recipename
         accumulate_rdeps_from_file(d, depdict, os.path.join(rtdepsdir, recipename, f"{rpmname}.rtdeps"))
+        # reinject here loopcuts for this package
+        cuts = loopcuts.get(bindep, "").split()
+        if cuts:
+            accumulate_rdeps_from_list(d, depdict, cuts)
 
 def create_dnfrepo_with_contents(d, target_dir: str, packages: Iterable[str]) -> None:
     import subprocess
