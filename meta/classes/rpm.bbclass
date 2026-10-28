@@ -196,12 +196,14 @@ python () {
     pn = d.getVar('PN')
     for pkg in d.getVar("PACKAGES").split():
         # Setup do_checkinstall_* task with check_install as
-        # implementation.  Sanitize the package name to create a valid
-        # python function name, and pass the RPM name through a flag.
+        # implementation.  Sanitize the package name to have taskname
+        # be a valid python function name (as tasks are functions, and
+        # we're creating a python task)
         newtask = f"do_checkinstall_{re.sub(r'\W', '_', pkg)}"
         bb.build.addtask(newtask, "do_checkinstall", f"do_deploy_runtimedeps_{pkg}", d)
         d.setVar(newtask, d.getVar("check_install", False))
         d.setVarFlags(newtask, d.getVarFlags("check_install"))
+        # pass the RPM name through a flag
         d.setVarFlag(newtask, "rpm_package", pkg)
         # FIXME we MUST not do that, but for some reason disabling network
         # fails with "newuidmap: write to uid_map failed"
