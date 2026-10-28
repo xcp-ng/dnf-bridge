@@ -96,6 +96,9 @@ else
         --define "_sourcedir $PWD/SOURCES"
     )
 fi
+
+test -r "$specs" || die "no specfile found"
+specs=$(realpath "$specs")
 echo "Found specfiles $specs"
 
 dnf builddep "${SPECFLAGS[@]}" -y $specs
@@ -112,14 +115,12 @@ adduser --uid "$USERUID" builder
 # fixup parent of bind-mount owned by root by default
 chown "$USERUID" /home/builder
 
-# # in case the build deps contain xs-opam-repo, source the added profile.d file
-# # FIXME: should move to xapi.spec
-# [ ! -f /etc/profile.d/opam.sh ] || source /etc/profile.d/opam.sh
+# use "su -" so anything added to /etc/profile.d/ by a build-dep gets enabled
 
 # util-linux su trick to preserve proper word splitting: pass command
-# words as argruments to 'exec "$@"'
+# words as arguments to 'exec "$@"'
 ARGV0="rpmbuild $specs"
-su builder -c 'exec "$@"' -- "$ARGV0" rpmbuild "${RPMBUILDFLAGS[@]}"
+su - builder -c 'exec "$@"' -- "$ARGV0" rpmbuild "${RPMBUILDFLAGS[@]}"
 if [ $? = 0 ]; then
     cp -a /home/builder/rpmbuild/RPMS /home/builder/rpmbuild/SRPMS "$OUTPUTDIR/"
 fi
