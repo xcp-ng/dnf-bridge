@@ -128,9 +128,9 @@ EOF
             --install-first "${@d.getVar('DIST_RELEASE_PACKAGES').strip()}"
 }
 
+# shared-state for do_build
 SSTATETASKS += "do_build"
 do_build[sstate-plaindirs] = "${WORKDIR}/SRPMS ${WORKDIR}/RPMS"
-
 addtask do_build_setscene
 python do_build_setscene () {
     sstate_setscene(d)
