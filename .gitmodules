@@ -1,0 +1,9 @@
+[submodule "bitbake"]
+	path = bitbake
+	# url = https://git.openembedded.org/bitbake
+        # needed for patches that won't make it in eol'd 2.16, and for those that
+        # did not reach 2.18 yet
+        url = https://github.com/xcp-ng/bitbake
+[submodule "meta/lib/specfile"]
+	path = specfile
+	url = https://github.com/packit/specfile
